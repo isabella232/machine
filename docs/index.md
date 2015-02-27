@@ -671,7 +671,7 @@ Options:
 
 The SoftLayer driver will use `UBUNTU_LATEST` as the image type by default.
 
-#### Joyent
+#### Joyent 
 
 Create machines on [Joyent's SmartDataCenter](http://joyent.com/).
 
