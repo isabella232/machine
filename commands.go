@@ -14,7 +14,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 
-	_ "./drivers/sdc"
+	_ "./drivers/sdc" 
 	"github.com/docker/machine/drivers"
 	_ "github.com/docker/machine/drivers/amazonec2"
 	_ "github.com/docker/machine/drivers/azure"
