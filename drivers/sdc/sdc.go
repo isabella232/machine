@@ -26,7 +26,7 @@ import (
 
 const (
 	SDCDockerPort   string = "2376"
-	SDCDockerDomain string = "api.joyentcloud.com"
+	SDCDockerDomain string = "api.joyentcloud.com" 
 )
 
 type Driver struct {
