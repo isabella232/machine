@@ -691,16 +691,16 @@ Options:
 
 The following docker-machine commands are supported with the SDC/JPC Docker service:
 
-- active	Get or set the active machine
-- create	Create a machine
-- config	Print the connection config for machine
-- inspect	Inspect information about a machine
-- ip		Get the IP address of a machine
-- ls		List machines
-- rm		Remove a machine
-- env		Display the commands to set up the environment for the Docker client
-- url		Get the URL of a machine
-- help, h	Shows a list of commands or help for one command
+- active : Get or set the active machine
+- create : Create a machine
+- config : Print the connection config for machine
+- inspect : Inspect information about a machine
+- ip : Get the IP address of a machine
+- ls : List machines
+- rm : Remove a machine
+- env : Display the commands to set up the environment for the Docker client
+- url : Get the URL of a machine
+- help, h : Shows a list of commands or help for one command
 
 #### Microsoft Azure
 
