@@ -677,7 +677,7 @@ Create machines on [Joyent's SmartDataCenter](http://joyent.com/).
 
 Before starting to use the Docker service on the Joyent's SmartDataCenter you need to have completed the signup process and generated a set of SSH keys (make sure you know the name and location of your SSH key). Please visit [getting started](https://www.joyent.com/developers/getting-started) for more information.
 
-If want to try to run SDC on your laptop please visit [the getting started with Cloud on a Laptop section](https://github.com/joyent/sdc#getting-started) or if you already are running SmartDataCenter [here](https://github.com/joyent/sdc-docker) is what you need to do in order to enable the Docker service
+If you want to try to run SDC on your laptop please visit [the getting started with Cloud on a Laptop section](https://github.com/joyent/sdc#getting-started) or if you already are running SmartDataCenter [here](https://github.com/joyent/sdc-docker) is what you need to do in order to enable the Docker service
 
 	$ docker-machine create --driver sdc --sdc-region=$REGION --sdc-account=$ACCOUNT --sdc-key=$PATH_TO_SSH_KEY
     
@@ -687,7 +687,7 @@ Options:
  - `--sdc-account` : The SDC/JPC acount name.
  - `--sdc-key`     : The path to your private key matching the public key you are using for SDC/JPC
  
- The first thing that will happen when you run `$ docker-machine create --driver sdc` is that your private key will be used for generating a certificate that the Docker client can use to communicate securely with the Docker service. 
+The first thing that will happen when you run `$ docker-machine create --driver sdc` is that your private key will be used for generating a certificate that the Docker client can use to communicate securely with the Docker service. 
 
 The following docker-machine commands are supported with the SDC/JPC Docker service:
 
