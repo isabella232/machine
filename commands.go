@@ -14,6 +14,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 
+	_ "./drivers/sdc"
 	"github.com/docker/machine/drivers"
 	_ "github.com/docker/machine/drivers/amazonec2"
 	_ "github.com/docker/machine/drivers/azure"
@@ -473,7 +474,7 @@ func cmdEnv(c *cli.Context) {
 	if c.Bool("unset") {
 		switch userShell {
 		case "fish":
-			fmt.Printf("set -e DOCKER_TLS_VERIFY\nset -e DOCKER_CERT_PATH\nset -e DOCKER_HOST\n")
+			fmt.Printf("set -e DOCKER_TLS_VERIFY\nset -e DOCKER_CERT_PATH\nset -e DOCKER_HOST")
 		default:
 			fmt.Println("unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_HOST")
 		}
