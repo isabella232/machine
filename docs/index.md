@@ -4,8 +4,7 @@ page_keywords: docker, machine, virtualbox, digitalocean, amazonec2
 
 # Docker Machine
 
-> **Note**: Machine is currently in beta, so things are likely to change. We
-> don't recommend you use it in production yet.
+> **Note**: Machine is currently in beta.  Features are likely to change.
 
 Machine makes it really easy to create Docker hosts on your computer, on cloud
 providers and inside your own data center. It creates servers, installs Docker
@@ -601,19 +600,19 @@ Options:
 
 By default, the Amazon EC2 driver will use a daily image of Ubuntu 14.04 LTS.
 
-| Region        | AMI ID     |
-|:--------------|:-----------|
-|ap-northeast-1 |ami-44f1e245|
-|ap-southeast-1 |ami-f95875ab|
-|ap-southeast-2 |ami-890b62b3|
-|cn-north-1     |ami-fe7ae8c7|
-|eu-west-1      |ami-823686f5|
-|eu-central-1   |ami-ac1524b1|
-|sa-east-1      |ami-c770c1da|
-|us-east-1      |ami-4ae27e22|
-|us-west-1      |ami-d1180894|
-|us-west-2      |ami-898dd9b9|
-|us-gov-west-1  |ami-cf5630ec|
+ | Region        | AMI ID     |
+ |:--------------|:-----------|
+	|ap-northeast-1 |ami-44f1e245|
+	|ap-southeast-1 |ami-f95875ab|
+	|ap-southeast-2 |ami-890b62b3|
+	|cn-north-1     |ami-fe7ae8c7|
+	|eu-west-1      |ami-823686f5|
+	|eu-central-1   |ami-ac1524b1|
+	|sa-east-1      |ami-c770c1da|
+	|us-east-1      |ami-4ae27e22|
+	|us-west-1      |ami-d1180894|
+	|us-west-2      |ami-898dd9b9|
+	|us-gov-west-1  |ami-cf5630ec|
 
 #### Digital Ocean
 
@@ -672,6 +671,36 @@ Options:
 
 The SoftLayer driver will use `UBUNTU_LATEST` as the image type by default.
 
+#### Joyent
+
+Create machines on [Joyent's SmartDataCenter](http://joyent.com/).
+
+Before starting to use the Docker service on the Joyent's SmartDataCenter you need to have completed the signup process and generated a set of SSH keys (make sure you know the name and location of your SSH key). Please visit [getting started](https://www.joyent.com/developers/getting-started) for more information.
+
+If want to try to run SDC on your laptop please visit [the getting started with Cloud on a Laptop section](https://github.com/joyent/sdc#getting-started) or if you already are running SmartDataCenter [here](https://github.com/joyent/sdc-docker) is what you need to do in order to enable the Docker service
+
+	$ docker-machine create --driver sdc --sdc-region=$REGION --sdc-account=$ACCOUNT --sdc-key=$PATH_TO_SSH_KEY
+    
+Options:
+
+ - `--sdc-region`  : The SDC data center you want to use.
+ - `--sdc-account` : The SDC/JPC acount name.
+ - `--sdc-key`     : The path to your private key matching the public key you are using for SDC/JPC
+ 
+ The first thing that will happen when you run `$ docker-machine create --driver sdc` is that your private key will be used for generating a certificate that the Docker client can use to communicate securely with the Docker service. 
+
+The following docker-machine commands are supported with the SDC/JPC Docker service:
+
+- active	Get or set the active machine
+- create	Create a machine
+- config	Print the connection config for machine
+- inspect	Inspect information about a machine
+- ip		Get the IP address of a machine
+- ls		List machines
+- rm		Remove a machine
+- env		Display the commands to set up the environment for the Docker client
+- url		Get the URL of a machine
+- help, h	Shows a list of commands or help for one command
 
 #### Microsoft Azure
 
@@ -700,28 +729,6 @@ image by default. Note, this image is not available in the Chinese regions. In C
  specify `b549f4301d0b4295b8e76ceb65df47d4__Ubuntu-14_04_1-LTS-amd64-server-20140927-en-us-30GB`.
 
 You may need to `machine ssh` in to the virtual machine and reboot to ensure that the OS is updated.
-
-#### Microsoft Hyper-V
-
-Creates a Boot2Docker virtual machine locally on your Windows machine
-using Hyper-V.  [See here](http://windows.microsoft.com/en-us/windows-8/hyper-v-run-virtual-machines)
-for instructions to enable Hyper-V. You will need to use an
-Administrator level account to create and manage Hyper-V machines.
-
-> **Note**: You will need an existing virtual switch to use the
-> driver.  Hyper-V can share an external network interface (aka
-> bridging), see [this blog](http://blogs.technet.com/b/canitpro/archive/2014/03/11/step-by-step-enabling-hyper-v-for-use-on-windows-8-1.aspx).
-> If you would like to use NAT, create an internal network, and use
-> [Internet Connection
-> Sharing](http://www.packet6.com/allowing-windows-8-1-hyper-v-vm-to-work-with-wifi/).
-
-Options:
-
- - `--hyper-v-boot2docker-location`: Location of a local boot2docker iso to use. Overrides the URL option below.
- - `--hyper-v-boot2docker-url`: The URL of the boot2docker iso. Defaults to the latest available version.
- - `--hyper-v-disk-size`: Size of disk for the host in MB. Defaults to `20000`.
- - `--hyper-v-memory`: Size of memory for the host in MB. Defaults to `1024`. The machine is setup to use dynamic memory.
- - `--hyper-v-virtual-switch`: Name of the virtual switch to use. Defaults to first found.
 
 #### Openstack
 Create machines on [Openstack](http://www.openstack.org/software/)
@@ -861,3 +868,4 @@ Options:
  - `--vmwarevsphere-vcenter`: IP/hostname for vCenter (or ESXi if connecting directly to a single host).
 
 The VMware vSphere driver uses the latest boot2docker image.
+
