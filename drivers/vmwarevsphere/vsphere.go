@@ -5,30 +5,31 @@
 package vmwarevsphere
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/drivers/vmwarevsphere/errors"
+	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
-	cssh "golang.org/x/crypto/ssh"
 )
 
 const (
 	DATASTORE_DIR      = "boot2docker-iso"
-	isoFilename        = "boot2docker-vmw.iso"
+	isoFilename        = "boot2docker-1.5.0-GH747.iso"
 	B2D_ISO_NAME       = isoFilename
 	DEFAULT_CPU_NUMBER = 2
 	dockerConfigDir    = "/var/lib/boot2docker"
@@ -38,6 +39,7 @@ const (
 
 type Driver struct {
 	MachineName    string
+	SSHUser        string
 	SSHPort        int
 	CPU            int
 	Memory         int
@@ -158,11 +160,52 @@ func NewDriver(machineName string, storePath string, caCert string, privateKey s
 	return &Driver{MachineName: machineName, StorePath: storePath, CaCertPath: caCert, PrivateKeyPath: privateKey}, nil
 }
 
+func (d *Driver) AuthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) DeauthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) GetMachineName() string {
+	return d.MachineName
+}
+
+func (d *Driver) GetSSHHostname() (string, error) {
+	return d.GetIP()
+}
+
+func (d *Driver) GetSSHKeyPath() string {
+	return filepath.Join(d.storePath, "id_rsa")
+}
+
+func (d *Driver) GetSSHPort() (int, error) {
+	if d.SSHPort == 0 {
+		d.SSHPort = 22
+	}
+
+	return d.SSHPort, nil
+}
+
+func (d *Driver) GetSSHUsername() string {
+	if d.SSHUser == "" {
+		d.SSHUser = "docker"
+	}
+
+	return d.SSHUser
+}
+
+func (d *Driver) GetProviderType() provider.ProviderType {
+	return provider.Local
+}
+
 func (d *Driver) DriverName() string {
 	return "vmwarevsphere"
 }
 
 func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
+	d.SSHUser = "docker"
 	d.SSHPort = 22
 	d.CPU = flags.Int("vmwarevsphere-cpu-count")
 	d.Memory = flags.Int("vmwarevsphere-memory-size")
@@ -231,7 +274,7 @@ func (d *Driver) PreCreateCheck() error {
 
 // the current implementation does the following:
 // 1. check whether the docker directory contains the boot2docker ISO
-// 2. generate an SSH keypair
+// 2. generate an SSH keypair and bundle it in a tar.
 // 3. create a virtual machine with the boot2docker ISO mounted;
 // 4. reconfigure the virtual machine network and disk size;
 func (d *Driver) Create() error {
@@ -241,7 +284,6 @@ func (d *Driver) Create() error {
 
 	var (
 		isoURL string
-		err    error
 	)
 
 	b2dutils := utils.NewB2dUtils("", "")
@@ -275,7 +317,8 @@ func (d *Driver) Create() error {
 
 		//}
 
-		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/v1.5.0-vmw/boot2docker-1.5.0-vmw.iso"
+		// see https://github.com/boot2docker/boot2docker/pull/747
+		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/1.5.0-GH747/boot2docker-1.5.0-GH747.iso"
 
 		if _, err := os.Stat(commonIsoPath); os.IsNotExist(err) {
 			log.Infof("Downloading boot2docker.iso to %s...", commonIsoPath)
@@ -302,7 +345,7 @@ func (d *Driver) Create() error {
 	}
 
 	log.Infof("Generating SSH Keypair...")
-	if err := ssh.GenerateSSHKey(d.sshKeyPath()); err != nil {
+	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
 		return err
 	}
 
@@ -339,17 +382,18 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	log.Debugf("Setting hostname: %s", d.MachineName)
-	cmd, err := d.GetSSHCommand(fmt.Sprintf(
-		"echo \"127.0.0.1 %s\" | sudo tee -a /etc/hosts && sudo hostname %s && echo \"%s\" | sudo tee /etc/hostname",
-		d.MachineName,
-		d.MachineName,
-		d.MachineName,
-	))
-	if err != nil {
+	// Generate a tar keys bundle
+	if err := d.generateKeyBundle(); err != nil {
 		return err
 	}
-	if err := cmd.Run(); err != nil {
+
+	// Copy SSH keys bundle
+	if err := vcConn.GuestUpload(B2D_USER, B2D_PASS, path.Join(d.storePath, "userdata.tar"), "/home/docker/userdata.tar"); err != nil {
+		return err
+	}
+
+	// Expand tar file.
+	if err := vcConn.GuestStart(B2D_USER, B2D_PASS, "/usr/bin/sudo", "/bin/mv /home/docker/userdata.tar /var/lib/boot2docker/userdata.tar && /usr/bin/sudo tar xf /var/lib/boot2docker/userdata.tar -C /home/docker/ > /var/log/userdata.log 2>&1 && /usr/bin/sudo chown -R docker:staff /home/docker"); err != nil {
 		return err
 	}
 
@@ -380,41 +424,6 @@ func (d *Driver) Start() error {
 			return err
 		}
 
-		log.Infof("Configuring virtual machine %s... ", d.MachineName)
-
-		key, err := ioutil.ReadFile(d.publicSSHKeyPath())
-		if err != nil {
-			return err
-		}
-
-		// so, vmrun above will not work without vmtools in b2d.  since getting stuff into TCL
-		// is much more painful, we simply use the b2d password to get the initial public key
-		// onto the machine.  from then on we use the pub key.  meh.
-		sshConfig := &cssh.ClientConfig{
-			User: B2D_USER,
-			Auth: []cssh.AuthMethod{
-				cssh.Password(B2D_PASS),
-			},
-		}
-
-		ip, err := d.GetIP()
-		if err != nil {
-			return err
-		}
-
-		sshClient, err := cssh.Dial("tcp", fmt.Sprintf("%s:22", ip), sshConfig)
-		if err != nil {
-			return err
-		}
-		session, err := sshClient.NewSession()
-		if err != nil {
-			return err
-		}
-		if err := session.Run(fmt.Sprintf("mkdir /home/docker/.ssh && echo \"%s\" > /home/docker/.ssh/authorized_keys", string(key))); err != nil {
-			return err
-		}
-		session.Close()
-
 		return nil
 	}
 	return errors.NewInvalidStateError(d.MachineName)
@@ -422,11 +431,11 @@ func (d *Driver) Start() error {
 
 func (d *Driver) Stop() error {
 	vcConn := NewVcConn(d)
-	err := vcConn.VmPowerOff()
-	if err != nil {
+	if err := vcConn.VmShutdown(); err != nil {
 		return err
 	}
-	return err
+
+	return nil
 }
 
 func (d *Driver) Remove() error {
@@ -435,13 +444,12 @@ func (d *Driver) Remove() error {
 		return err
 	}
 	if machineState == state.Running {
-		if err = d.Stop(); err != nil {
+		if err = d.Kill(); err != nil {
 			return fmt.Errorf("can't stop VM: %s", err)
 		}
 	}
 	vcConn := NewVcConn(d)
-	err = vcConn.VmDestroy()
-	if err != nil {
+	if err = vcConn.VmDestroy(); err != nil {
 		return err
 	}
 	return nil
@@ -451,63 +459,48 @@ func (d *Driver) Restart() error {
 	if err := d.Stop(); err != nil {
 		return err
 	}
+	// Check for 120 seconds for the machine to stop
+	for i := 1; i <= 60; i++ {
+		machineState, err := d.GetState()
+		if err != nil {
+			return err
+		}
+		if machineState == state.Running {
+			log.Debugf("Not there yet %d/%d", i, 60)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if machineState == state.Stopped {
+			break
+		}
+	}
+
+	machineState, err := d.GetState()
+	// If the VM is still running after 120 seconds just kill it.
+	if machineState == state.Running {
+		if err = d.Kill(); err != nil {
+			return fmt.Errorf("can't stop VM: %s", err)
+		}
+	}
+
 	return d.Start()
 }
 
 func (d *Driver) Kill() error {
-	return d.Stop()
-}
-
-func (d *Driver) StartDocker() error {
-	log.Debug("Starting Docker...")
-
-	cmd, err := d.GetSSHCommand("sudo /etc/init.d/docker start")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	vcConn := NewVcConn(d)
+	if err := vcConn.VmPowerOff(); err != nil {
 		return err
 	}
 
 	return nil
-}
-
-func (d *Driver) StopDocker() error {
-	log.Debug("Stopping Docker...")
-
-	cmd, err := d.GetSSHCommand("sudo /etc/init.d/docker stop")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (d *Driver) GetDockerConfigDir() string {
-	return dockerConfigDir
 }
 
 func (d *Driver) Upgrade() error {
 	return fmt.Errorf("upgrade is not supported for vsphere driver at this moment")
 }
 
-func (d *Driver) GetSSHCommand(args ...string) (*exec.Cmd, error) {
-	ip, err := d.GetIP()
-	if err != nil {
-		return nil, err
-	}
-	return ssh.GetSSHCommand(ip, d.SSHPort, "docker", d.sshKeyPath(), args...), nil
-}
-
-func (d *Driver) sshKeyPath() string {
-	return filepath.Join(d.StorePath, "id_docker_host_vsphere")
-}
-
 func (d *Driver) publicSSHKeyPath() string {
-	return d.sshKeyPath() + ".pub"
+	return d.GetSSHKeyPath() + ".pub"
 }
 
 func (d *Driver) checkVsphereConfig() error {
@@ -557,4 +550,59 @@ func downloadISO(dir, file, url string) error {
 		return err
 	}
 	return nil
+}
+
+// Make a boot2docker userdata.tar key bundle
+func (d *Driver) generateKeyBundle() error {
+	log.Debugf("Creating Tar key bundle...")
+
+	magicString := "boot2docker, this is vmware speaking"
+
+	tf, err := os.Create(path.Join(d.storePath, "userdata.tar"))
+	if err != nil {
+		return err
+	}
+	defer tf.Close()
+	var fileWriter io.WriteCloser = tf
+
+	tw := tar.NewWriter(fileWriter)
+	defer tw.Close()
+
+	// magicString first so we can figure out who originally wrote the tar.
+	file := &tar.Header{Name: magicString, Size: int64(len(magicString))}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(magicString)); err != nil {
+		return err
+	}
+	// .ssh/key.pub => authorized_keys
+	file = &tar.Header{Name: ".ssh", Typeflag: tar.TypeDir, Mode: 0700}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	pubKey, err := ioutil.ReadFile(d.publicSSHKeyPath())
+	if err != nil {
+		return err
+	}
+	file = &tar.Header{Name: ".ssh/authorized_keys", Size: int64(len(pubKey)), Mode: 0644}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(pubKey)); err != nil {
+		return err
+	}
+	file = &tar.Header{Name: ".ssh/authorized_keys2", Size: int64(len(pubKey)), Mode: 0644}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(pubKey)); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	return nil
+
 }
