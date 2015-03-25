@@ -1,6 +1,9 @@
+---
 page_title: Docker Machine
 page_description: Working with Docker Machine
-page_keywords: docker, machine, virtualbox, digitalocean, amazonec2
+page_keywords: docker, machine, amazonec2, azure, digitalocean, google, openstack, rackspace, softlayer, virtualbox, vmwarevcloudair, vmwarevsphere
+---
+
 
 # Docker Machine
 
@@ -65,12 +68,13 @@ daemon installed, and will create and start a VirtualBox VM with Docker running.
 
 ```
 $ docker-machine create --driver virtualbox dev
-INFO[0000] Creating SSH key...
-INFO[0000] Creating VirtualBox VM...
-INFO[0007] Starting VirtualBox VM...
-INFO[0007] Waiting for VM to start...
-INFO[0038] "dev" has been created and is now the active machine
-INFO[0038] To connect: docker $(docker-machine config dev) ps
+INFO[0001] Downloading boot2docker.iso to /home/ehazlett/.docker/machine/cache/boot2docker.iso...
+INFO[0011] Creating SSH key...
+INFO[0012] Creating VirtualBox VM...
+INFO[0019] Starting VirtualBox VM...
+INFO[0020] Waiting for VM to start...
+INFO[0053] "dev" has been created and is now the active machine.
+INFO[0053] To point your Docker client at it, run this in your shell: eval "$(docker-machine env dev)"
 ```
 
 To use the Docker CLI, you can use the `env` command to list the commands
@@ -78,10 +82,9 @@ needed to connect to the instance.
 
 ```
 $ docker-machine env dev
-export DOCKER_TLS_VERIFY=yes
-export DOCKER_CERT_PATH=/home/ehazlett/.docker/machines/.client
+export DOCKER_TLS_VERIFY=1
+export DOCKER_CERT_PATH="/home/ehazlett/.docker/machine/machines/dev"
 export DOCKER_HOST=tcp://192.168.99.100:2376
-
 ```
 
 You can see the machine you have created by running the `docker-machine ls` command
@@ -89,27 +92,28 @@ again:
 
 ```
 $ docker-machine ls
-NAME      ACTIVE   DRIVER       STATE     URL
-dev       *        virtualbox   Running   tcp://192.168.99.100:2376
+NAME   ACTIVE   DRIVER       STATE     URL                         SWARM
+dev    *        virtualbox   Running   tcp://192.168.99.100:2376
 ```
 
 The `*` next to `dev` indicates that it is the active host.
 
 Next, as noted in the output of the `docker-machine create` command, we have to tell
-Docker to talk to that machine.  You can do this with the `docker-machine config`
+Docker to talk to that machine.  You can do this with the `docker-machine env`
 command.  For example,
 
 ```
-$ docker $(docker-machine config dev) ps
+$ eval "$(docker-machine env dev)"
+$ docker ps
 ```
 
-This will pass arguments to the Docker client that specify the TLS settings.
-To see what will be passed, run `docker-machine config dev`.
+This will set environment variables that the Docker client will read which specify
+the TLS settings. To see what will be set, run `docker-machine env dev`.
 
 You can now run Docker commands on this host:
 
 ```
-$ docker $(docker-machine config dev) run busybox echo hello world
+$ docker run busybox echo hello world
 Unable to find image 'busybox' locally
 Pulling repository busybox
 e72ac664f4f0: Download complete
@@ -188,7 +192,7 @@ INFO[0000] Creating SSH key...
 INFO[0000] Creating Digital Ocean droplet...
 INFO[0002] Waiting for SSH...
 INFO[0085] "staging" has been created and is now the active machine
-INFO[0085] To connect: docker $(docker-machine config dev) staging
+INFO[0085] To point your Docker client at it, run this in your shell: eval "$(docker-machine env staging)"
 ```
 
 For convenience, `docker-machine` will use sensible defaults for choosing settings such
@@ -251,8 +255,8 @@ custombox   *        none      Running   tcp://50.134.234.20:2376
 ```
 
 ## Using Docker Machine with Docker Swarm
-Docker Machine can also provision [Swarm](https://github.com/docker/swarm) 
-clusters. This can be used with any driver and will be secured with TLS. 
+Docker Machine can also provision [Swarm](https://github.com/docker/swarm)
+clusters. This can be used with any driver and will be secured with TLS.
 
 > **Note**: This is an experimental feature so the subcommands and
 > options are likely to change in future versions.
@@ -269,7 +273,7 @@ $ docker-machine create -d virtualbox local
 Load the Machine configuration into your shell:
 
 ```
-$ $(docker-machine env local)
+$ eval "$(docker-machine env local)"
 ```
 Then run generate the token using the Swarm Docker image:
 
@@ -314,13 +318,13 @@ For example:
 
 ```
 $ docker-machine env --swarm swarm-master
-export DOCKER_TLS_VERIFY=yes
-export DOCKER_CERT_PATH=/home/ehazlett/.docker/machines/.client
+export DOCKER_TLS_VERIFY=1
+export DOCKER_CERT_PATH="/home/ehazlett/.docker/machines/.client"
 export DOCKER_HOST=tcp://192.168.99.100:3376
 ```
 
 You can load this into your environment using
-`$(docker-machine env --swarm swarm-master)`.
+`eval "$(docker-machine env --swarm swarm-master)"`.
 
 Now you can use the Docker CLI to query:
 
@@ -358,11 +362,13 @@ Create a machine.
 
 ```
 $ docker-machine create --driver virtualbox dev
+INFO[0001] Downloading boot2docker.iso to /home/ehazlett/.docker/machine/cache/boot2docker.iso...
 INFO[0000] Creating SSH key...
 INFO[0000] Creating VirtualBox VM...
 INFO[0007] Starting VirtualBox VM...
 INFO[0007] Waiting for VM to start...
-INFO[0038] "dev" has been created and is now the active machine. To point Docker at this machine, run: export DOCKER_HOST=$(docker-machine url) DOCKER_AUTH=identity
+INFO[0038] "dev" has been created and is now the active machine.
+INFO[0038] To point your Docker client at it, run this in your shell: eval "$(docker-machine env dev)"
 ```
 
 #### config
@@ -371,7 +377,7 @@ Show the Docker client configuration for a machine.
 
 ```
 $ docker-machine config dev
---tls --tlscacert=/Users/ehazlett/.docker/machines/dev/ca.pem --tlscert=/Users/ehazlett/.docker/machines/dev/cert.pem --tlskey=/Users/ehazlett/.docker/machines/dev/key.pem -H tcp://192.168.99.103:2376
+--tlsverify --tlscacert="/Users/ehazlett/.docker/machines/dev/ca.pem" --tlscert="/Users/ehazlett/.docker/machines/dev/cert.pem" --tlskey="/Users/ehazlett/.docker/machines/dev/key.pem" -H tcp://192.168.99.103:2376
 ```
 
 #### env
@@ -385,13 +391,13 @@ run in a subshell.  Running `docker-machine env -u` will print
 
 ```
 $ env | grep DOCKER
-$ $(docker-machine env dev)
+$ eval "$(docker-machine env dev)"
 $ env | grep DOCKER
 DOCKER_HOST=tcp://192.168.99.101:2376
 DOCKER_CERT_PATH=/Users/nathanleclaire/.docker/machines/.client
-DOCKER_TLS_VERIFY=yes
+DOCKER_TLS_VERIFY=1
 $ # If you run a docker command, now it will run against that host.
-$ $(docker-machine env -u)
+$ eval "$(docker-machine env -u)"
 $ env | grep DOCKER
 $ # The environment variables have been unset.
 ```
@@ -454,6 +460,16 @@ foo1            virtualbox   Running   tcp://192.168.99.106:2376
 foo2            virtualbox   Running   tcp://192.168.99.107:2376
 foo3            virtualbox   Running   tcp://192.168.99.108:2376
 foo4   *        virtualbox   Running   tcp://192.168.99.109:2376
+```
+
+#### regenerate-certs
+
+Regenerate TLS certificates and update the machine with new certs.
+
+```
+$ docker-machine regenerate-certs
+Regenerate TLS machine certs?  Warning: this is irreversible. (y/n): y
+INFO[0013] Regenerating TLS certificates
 ```
 
 #### restart
@@ -578,9 +594,6 @@ tcp://192.168.99.109:2376
 
 ## Drivers
 
-TODO: List all possible values (where applicable) for all flags for every
-driver.
-
 #### Amazon Web Services
 Create machines on [Amazon Web Services](http://aws.amazon.com).  You will need an Access Key ID, Secret Access Key and a VPC ID.  To find the VPC ID, login to the AWS console and go to Services -> VPC -> Your VPCs.  Select the one where you would like to launch the instance.
 
@@ -589,6 +602,7 @@ Options:
  - `--amazonec2-access-key`: **required** Your access key id for the Amazon Web Services API.
  - `--amazonec2-ami`: The AMI ID of the instance to use  Default: `ami-4ae27e22`
  - `--amazonec2-instance-type`: The instance type to run.  Default: `t2.micro`
+ - `--amazonec2-iam-instance-profile`: The AWS IAM role name to be used as the instance profile
  - `--amazonec2-region`: The region to use when launching the instance.  Default: `us-east-1`
  - `--amazonec2-root-size`: The root disk size of the instance (in GB).  Default: `16`
  - `--amazonec2-secret-key`: **required** Your secret access key for the Amazon Web Services API.
@@ -628,7 +642,10 @@ Options:
  - `--digitalocean-access-token`: Your personal access token for the Digital Ocean API.
  - `--digitalocean-image`: The name of the Digital Ocean image to use. Default: `docker`
  - `--digitalocean-region`: The region to create the droplet in, see [Regions API](https://developers.digitalocean.com/documentation/v2/#regions) for how to get a list. Default: `nyc3`
- - `--digitalocean-size`: The size of the Digital Ocean driver (larger than default options are of the form `2gb`). Default: `512mb`
+ - `--digitalocean-size`: The size of the Digital Ocean droplet (larger than default options are of the form `2gb`). Default: `512mb`
+ - `--digitalocean-ipv6`: Enable IPv6 support for the droplet. Default: `false`
+ - `--digitalocean-private-networking`: Enable private networking support for the droplet. Default: `false`
+ - `--digitalocean-backups`: Enable Digital Oceans backups for the droplet. Default: `false`
 
 The DigitalOcean driver will use `ubuntu-14-04-x64` as the default image.
 
@@ -645,7 +662,7 @@ Options:
  - `--google-instance-name`: The name of the instance.  Default: `docker-machine`
  - `--google-project`: The name of your project to use when launching the instance.
 
-The GCE driver will use the `ubuntu-1404-trusty-v20141212` instance type unless otherwise specified.
+The GCE driver will use the `ubuntu-1404-trusty-v20150128` instance type unless otherwise specified.
 
 #### IBM Softlayer
 
@@ -655,7 +672,8 @@ You need to generate an API key in the softlayer control panel.
 [Retrieve your API key](http://knowledgelayer.softlayer.com/procedure/retrieve-your-api-key)
 
 Options:
-  - `--softlayer-api-endpoint=`: Change softlayer API endpoint
+
+  - `--softlayer-api-endpoint`: Change softlayer API endpoint
   - `--softlayer-user`: **required** username for your softlayer account, api key needs to match this user.
   - `--softlayer-api-key`: **required** API key for your user account
   - `--softlayer-cpu`: Number of CPU's for the machine.

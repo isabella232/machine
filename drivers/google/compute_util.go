@@ -14,21 +14,21 @@ import (
 
 // ComputeUtil is used to wrap the raw GCE API code and store common parameters.
 type ComputeUtil struct {
-	zone         string
-	instanceName string
-	userName     string
-	project      string
-	service      *raw.Service
-	zoneURL      string
-	globalURL    string
-	ipAddress    string
-	SwarmMaster  bool
-	SwarmHost    string
+	zone          string
+	instanceName  string
+	userName      string
+	project       string
+	service       *raw.Service
+	zoneURL       string
+	authTokenPath string
+	globalURL     string
+	ipAddress     string
+	SwarmMaster   bool
+	SwarmHost     string
 }
 
 const (
-	apiURL = "https://www.googleapis.com/compute/v1/projects/"
-	//imageName          = "https://www.googleapis.com/compute/v1/projects/google-containers/global/images/container-vm-v20150129"
+	apiURL             = "https://www.googleapis.com/compute/v1/projects/"
 	imageName          = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150128"
 	firewallRule       = "docker-machines"
 	port               = "2376"
@@ -39,20 +39,21 @@ const (
 
 // NewComputeUtil creates and initializes a ComputeUtil.
 func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
-	service, err := newGCEService(driver.storePath)
+	service, err := newGCEService(driver.storePath, driver.AuthTokenPath)
 	if err != nil {
 		return nil, err
 	}
 	c := ComputeUtil{
-		zone:         driver.Zone,
-		instanceName: driver.MachineName,
-		userName:     driver.UserName,
-		project:      driver.Project,
-		service:      service,
-		zoneURL:      apiURL + driver.Project + "/zones/" + driver.Zone,
-		globalURL:    apiURL + driver.Project + "/global",
-		SwarmMaster:  driver.SwarmMaster,
-		SwarmHost:    driver.SwarmHost,
+		authTokenPath: driver.AuthTokenPath,
+		zone:          driver.Zone,
+		instanceName:  driver.MachineName,
+		userName:      driver.SSHUser,
+		project:       driver.Project,
+		service:       service,
+		zoneURL:       apiURL + driver.Project + "/zones/" + driver.Zone,
+		globalURL:     apiURL + driver.Project + "/global",
+		SwarmMaster:   driver.SwarmMaster,
+		SwarmHost:     driver.SwarmHost,
 	}
 	return &c, nil
 }
@@ -201,7 +202,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	c.waitForSSH(ip)
 
 	// Update the SSH Key
-	sshKey, err := ioutil.ReadFile(d.publicSSHKeyPath)
+	sshKey, err := ioutil.ReadFile(d.GetSSHKeyPath() + ".pub")
 	if err != nil {
 		return err
 	}
@@ -222,39 +223,6 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	err = c.waitForRegionalOp(op.Name)
 	if err != nil {
 		return err
-	}
-
-	log.Info("Configuring Machine...")
-
-	log.Debugf("Setting hostname: %s", d.MachineName)
-	cmd, err := d.GetSSHCommand(fmt.Sprintf(
-		"echo \"127.0.0.1 %s\" | sudo tee -a /etc/hosts && sudo hostname %s && echo \"%s\" | sudo tee /etc/hostname",
-		d.MachineName,
-		d.MachineName,
-		d.MachineName,
-	))
-
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *ComputeUtil) updateDocker(d *Driver) error {
-	log.Debugf("Upgrading Docker")
-
-	cmd, err := d.GetSSHCommand("sudo apt-get update && sudo apt-get install --upgrade lxc-docker")
-	if err != nil {
-		return err
-
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-
 	}
 
 	return nil

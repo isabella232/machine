@@ -3,7 +3,6 @@ package digitalocean
 import (
 	"fmt"
 	"io/ioutil"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/codegangsta/cli"
 	"github.com/digitalocean/godo"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 )
@@ -21,22 +21,27 @@ const (
 )
 
 type Driver struct {
-	AccessToken    string
-	DropletID      int
-	DropletName    string
-	Image          string
-	MachineName    string
-	IPAddress      string
-	Region         string
-	SSHKeyID       int
-	Size           string
-	CaCertPath     string
-	PrivateKeyPath string
-	DriverKeyPath  string
-	SwarmMaster    bool
-	SwarmHost      string
-	SwarmDiscovery string
-	storePath      string
+	AccessToken       string
+	DropletID         int
+	DropletName       string
+	Image             string
+	MachineName       string
+	IPAddress         string
+	Region            string
+	SSHKeyID          int
+	SSHUser           string
+	SSHPort           int
+	Size              string
+	IPv6              bool
+	Backups           bool
+	PrivateNetworking bool
+	CaCertPath        string
+	PrivateKeyPath    string
+	DriverKeyPath     string
+	SwarmMaster       bool
+	SwarmHost         string
+	SwarmDiscovery    string
+	storePath         string
 }
 
 func init() {
@@ -73,11 +78,66 @@ func GetCreateFlags() []cli.Flag {
 			Usage:  "Digital Ocean size",
 			Value:  "512mb",
 		},
+		cli.BoolFlag{
+			EnvVar: "DIGITALOCEAN_IPV6",
+			Name:   "digitalocean-ipv6",
+			Usage:  "enable ipv6 for droplet",
+		},
+		cli.BoolFlag{
+			EnvVar: "DIGITALOCEAN_PRIVATE_NETWORKING",
+			Name:   "digitalocean-private-networking",
+			Usage:  "enable private networking for droplet",
+		},
+		cli.BoolFlag{
+			EnvVar: "DIGITALOCEAN_BACKUPS",
+			Name:   "digitalocean-backups",
+			Usage:  "enable backups for droplet",
+		},
 	}
 }
 
 func NewDriver(machineName string, storePath string, caCert string, privateKey string) (drivers.Driver, error) {
 	return &Driver{MachineName: machineName, storePath: storePath, CaCertPath: caCert, PrivateKeyPath: privateKey}, nil
+}
+
+func (d *Driver) AuthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) DeauthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) GetMachineName() string {
+	return d.MachineName
+}
+
+func (d *Driver) GetSSHHostname() (string, error) {
+	return d.GetIP()
+}
+
+func (d *Driver) GetSSHKeyPath() string {
+	return filepath.Join(d.storePath, "id_rsa")
+}
+
+func (d *Driver) GetSSHPort() (int, error) {
+	if d.SSHPort == 0 {
+		d.SSHPort = 22
+	}
+
+	return d.SSHPort, nil
+}
+
+func (d *Driver) GetSSHUsername() string {
+	if d.SSHUser == "" {
+		d.SSHUser = "root"
+	}
+
+	return d.SSHUser
+}
+
+func (d *Driver) GetProviderType() provider.ProviderType {
+	return provider.Remote
 }
 
 func (d *Driver) DriverName() string {
@@ -89,9 +149,14 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Image = flags.String("digitalocean-image")
 	d.Region = flags.String("digitalocean-region")
 	d.Size = flags.String("digitalocean-size")
+	d.IPv6 = flags.Bool("digitalocean-ipv6")
+	d.PrivateNetworking = flags.Bool("digitalocean-private-networking")
+	d.Backups = flags.Bool("digitalocean-backups")
 	d.SwarmMaster = flags.Bool("swarm-master")
 	d.SwarmHost = flags.String("swarm-host")
 	d.SwarmDiscovery = flags.String("swarm-discovery")
+	d.SSHUser = "root"
+	d.SSHPort = 22
 
 	if d.AccessToken == "" {
 		return fmt.Errorf("digitalocean driver requires the --digitalocean-access-token option")
@@ -101,7 +166,18 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 }
 
 func (d *Driver) PreCreateCheck() error {
-	return nil
+	client := d.getClient()
+	regions, _, err := client.Regions.List(nil)
+	if err != nil {
+		return err
+	}
+	for _, region := range regions {
+		if region.Slug == d.Region {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("digitalocean requires a valid region")
 }
 
 func (d *Driver) Create() error {
@@ -119,11 +195,14 @@ func (d *Driver) Create() error {
 	client := d.getClient()
 
 	createRequest := &godo.DropletCreateRequest{
-		Image:   d.Image,
-		Name:    d.MachineName,
-		Region:  d.Region,
-		Size:    d.Size,
-		SSHKeys: []interface{}{d.SSHKeyID},
+		Image:             d.Image,
+		Name:              d.MachineName,
+		Region:            d.Region,
+		Size:              d.Size,
+		IPv6:              d.IPv6,
+		PrivateNetworking: d.PrivateNetworking,
+		Backups:           d.Backups,
+		SSHKeys:           []interface{}{d.SSHKeyID},
 	}
 
 	newDroplet, _, err := client.Droplets.Create(createRequest)
@@ -158,23 +237,6 @@ func (d *Driver) Create() error {
 	log.Infof("Waiting for SSH...")
 
 	if err := ssh.WaitForTCP(fmt.Sprintf("%s:%d", d.IPAddress, 22)); err != nil {
-		return err
-	}
-
-	log.Info("Configuring Machine...")
-
-	log.Debugf("Setting hostname: %s", d.MachineName)
-	cmd, err := d.GetSSHCommand(fmt.Sprintf(
-		"echo \"127.0.0.1 %s\" | sudo tee -a /etc/hosts && sudo hostname %s && echo \"%s\" | sudo tee /etc/hostname",
-		d.MachineName,
-		d.MachineName,
-		d.MachineName,
-	))
-
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
 		return err
 	}
 
@@ -274,57 +336,8 @@ func (d *Driver) Kill() error {
 	return err
 }
 
-func (d *Driver) StartDocker() error {
-	log.Debug("Starting Docker...")
-
-	cmd, err := d.GetSSHCommand("sudo service docker start")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (d *Driver) StopDocker() error {
-	log.Debug("Stopping Docker...")
-
-	cmd, err := d.GetSSHCommand("sudo service docker stop")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (d *Driver) GetDockerConfigDir() string {
 	return dockerConfigDir
-}
-
-func (d *Driver) Upgrade() error {
-	log.Debugf("Upgrading Docker")
-
-	cmd, err := d.GetSSHCommand("sudo apt-get update && sudo apt-get install --upgrade lxc-docker")
-	if err != nil {
-		return err
-
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-
-	}
-
-	return cmd.Run()
-}
-
-func (d *Driver) GetSSHCommand(args ...string) (*exec.Cmd, error) {
-	cmd := ssh.GetSSHCommand(d.IPAddress, 22, "root", d.sshKeyPath(), args...)
-	return cmd, nil
 }
 
 func (d *Driver) getClient() *godo.Client {

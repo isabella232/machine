@@ -5,15 +5,16 @@
 package vmwarefusion
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"text/template"
 	"time"
@@ -21,17 +22,17 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
-	cssh "golang.org/x/crypto/ssh"
 )
 
 const (
 	B2D_USER        = "docker"
 	B2D_PASS        = "tcuser"
 	dockerConfigDir = "/var/lib/boot2docker"
-	isoFilename     = "boot2docker-vmw.iso"
+	isoFilename     = "boot2docker-1.5.0-GH747.iso"
 )
 
 // Driver for VMware Fusion
@@ -40,6 +41,7 @@ type Driver struct {
 	IPAddress      string
 	Memory         int
 	DiskSize       int
+	CPUs           int
 	ISO            string
 	Boot2DockerURL string
 	CaCertPath     string
@@ -47,6 +49,9 @@ type Driver struct {
 	SwarmMaster    bool
 	SwarmHost      string
 	SwarmDiscovery string
+	CPUS           int
+	SSHUser        string
+	SSHPort        int
 
 	storePath string
 }
@@ -92,6 +97,46 @@ func NewDriver(machineName string, storePath string, caCert string, privateKey s
 	return &Driver{MachineName: machineName, storePath: storePath, CaCertPath: caCert, PrivateKeyPath: privateKey}, nil
 }
 
+func (d *Driver) AuthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) DeauthorizePort(ports []*drivers.Port) error {
+	return nil
+}
+
+func (d *Driver) GetMachineName() string {
+	return d.MachineName
+}
+
+func (d *Driver) GetSSHHostname() (string, error) {
+	return d.GetIP()
+}
+
+func (d *Driver) GetSSHKeyPath() string {
+	return filepath.Join(d.storePath, "id_rsa")
+}
+
+func (d *Driver) GetSSHPort() (int, error) {
+	if d.SSHPort == 0 {
+		d.SSHPort = 22
+	}
+
+	return d.SSHPort, nil
+}
+
+func (d *Driver) GetSSHUsername() string {
+	if d.SSHUser == "" {
+		d.SSHUser = "docker"
+	}
+
+	return d.SSHUser
+}
+
+func (d *Driver) GetProviderType() provider.ProviderType {
+	return provider.Local
+}
+
 func (d *Driver) DriverName() string {
 	return "vmwarefusion"
 }
@@ -104,6 +149,16 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SwarmMaster = flags.Bool("swarm-master")
 	d.SwarmHost = flags.String("swarm-host")
 	d.SwarmDiscovery = flags.String("swarm-discovery")
+	d.CPUS = runtime.NumCPU()
+	d.SSHUser = "docker"
+	d.SSHPort = 22
+
+	// We support a maximum of 16 cpu to be consistent with Virtual Hardware 10
+	// specs.
+	d.CPUs = int(runtime.NumCPU())
+	if d.CPUs > 16 {
+		d.CPUs = 16
+	}
 
 	return nil
 }
@@ -168,7 +223,7 @@ func (d *Driver) Create() error {
 
 	} else {
 		// TODO: until vmw tools are merged into b2d master
-		// we will use the iso from the vmware team
+		// we will use the iso from the vmware team.
 		//// todo: check latest release URL, download if it's new
 		//// until then always use "latest"
 		//isoURL, err = b2dutils.GetLatestBoot2DockerReleaseURL()
@@ -176,7 +231,8 @@ func (d *Driver) Create() error {
 		//	log.Warnf("Unable to check for the latest release: %s", err)
 		//}
 
-		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/v1.5.0-vmw/boot2docker-1.5.0-vmw.iso"
+		// see https://github.com/boot2docker/boot2docker/pull/747
+		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/1.5.0-GH747/boot2docker-1.5.0-GH747.iso"
 
 		if _, err := os.Stat(commonIsoPath); os.IsNotExist(err) {
 			log.Infof("Downloading boot2docker.iso to %s...", commonIsoPath)
@@ -197,7 +253,7 @@ func (d *Driver) Create() error {
 	}
 
 	log.Infof("Creating SSH key...")
-	if err := ssh.GenerateSSHKey(d.sshKeyPath()); err != nil {
+	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
 		return err
 	}
 
@@ -255,58 +311,34 @@ func (d *Driver) Create() error {
 		return fmt.Errorf("Machine didn't return an IP after 120 seconds, aborting")
 	}
 
+	// we got an IP, let's copy ssh keys over
 	d.IPAddress = ip
 
-	key, err := ioutil.ReadFile(d.publicSSHKeyPath())
-	if err != nil {
+	// Generate a tar keys bundle
+	if err := d.generateKeyBundle(); err != nil {
 		return err
 	}
 
-	// so, vmrun above will not work without vmtools in b2d.  since getting stuff into TCL
-	// is much more painful, we simply use the b2d password to get the initial public key
-	// onto the machine.  from then on we use the pub key.  meh.
-	sshConfig := &cssh.ClientConfig{
-		User: B2D_USER,
-		Auth: []cssh.AuthMethod{
-			cssh.Password(B2D_PASS),
-		},
-	}
-	sshClient, err := cssh.Dial("tcp", fmt.Sprintf("%s:22", ip), sshConfig)
-	if err != nil {
-		return err
-	}
-	session, err := sshClient.NewSession()
-	if err != nil {
-		return err
-	}
-	if err := session.Run(fmt.Sprintf("mkdir /home/docker/.ssh && echo \"%s\" > /home/docker/.ssh/authorized_keys", string(key))); err != nil {
-		return err
-	}
-	session.Close()
+	// Test if /var/lib/boot2docker exists
+	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "directoryExistsInGuest", d.vmxPath(), "/var/lib/boot2docker")
 
-	log.Debugf("Setting hostname: %s", d.MachineName)
-	cmd, err := d.GetSSHCommand(fmt.Sprintf(
-		"echo \"127.0.0.1 %s\" | sudo tee -a /etc/hosts && sudo hostname %s && echo \"%s\" | sudo tee /etc/hostname",
-		d.MachineName,
-		d.MachineName,
-		d.MachineName,
-	))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
+	// Copy SSH keys bundle
+	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "CopyFileFromHostToGuest", d.vmxPath(), path.Join(d.storePath, "userdata.tar"), "/home/docker/userdata.tar")
+
+	// Expand tar file.
+	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "runScriptInGuest", d.vmxPath(), "/bin/sh", "sudo /bin/mv /home/docker/userdata.tar /var/lib/boot2docker/userdata.tar && sudo tar xf /var/lib/boot2docker/userdata.tar -C /home/docker/ > /var/log/userdata.log 2>&1 && sudo chown -R docker:staff /home/docker")
 
 	return nil
 }
 
 func (d *Driver) Start() error {
+	log.Infof("Starting %s...", d.MachineName)
 	vmrun("start", d.vmxPath(), "nogui")
 	return nil
 }
 
 func (d *Driver) Stop() error {
+	log.Infof("Gracefully shutting down %s...", d.MachineName)
 	vmrun("stop", d.vmxPath(), "nogui")
 	return nil
 }
@@ -319,63 +351,25 @@ func (d *Driver) Remove() error {
 			return fmt.Errorf("Error stopping VM before deletion")
 		}
 	}
-
+	log.Infof("Deleting %s...", d.MachineName)
 	vmrun("deleteVM", d.vmxPath(), "nogui")
 	return nil
 }
 
 func (d *Driver) Restart() error {
+	log.Infof("Gracefully restarting %s...", d.MachineName)
 	vmrun("reset", d.vmxPath(), "nogui")
 	return nil
 }
 
 func (d *Driver) Kill() error {
-	vmrun("stop", d.vmxPath(), "nogui")
+	log.Infof("Forcibly halting %s...", d.MachineName)
+	vmrun("stop", d.vmxPath(), "hard nogui")
 	return nil
-}
-
-func (d *Driver) StartDocker() error {
-	log.Debug("Starting Docker...")
-
-	cmd, err := d.GetSSHCommand("sudo /etc/init.d/docker start")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (d *Driver) StopDocker() error {
-	log.Debug("Stopping Docker...")
-
-	cmd, err := d.GetSSHCommand("if [ -e /var/run/docker.pid ]; then sudo /etc/init.d/docker stop ; fi")
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (d *Driver) GetDockerConfigDir() string {
-	return dockerConfigDir
 }
 
 func (d *Driver) Upgrade() error {
-	return nil
-}
-
-func (d *Driver) GetSSHCommand(args ...string) (*exec.Cmd, error) {
-	ip, err := d.GetIP()
-	if err != nil {
-		return nil, err
-	}
-	return ssh.GetSSHCommand(ip, 22, "docker", d.sshKeyPath(), args...), nil
+	return fmt.Errorf("VMware Fusion does not currently support the upgrade operation.")
 }
 
 func (d *Driver) vmxPath() string {
@@ -495,10 +489,61 @@ func (d *Driver) getIPfromDHCPLease() (string, error) {
 
 }
 
-func (d *Driver) sshKeyPath() string {
-	return path.Join(d.storePath, "id_rsa")
+func (d *Driver) publicSSHKeyPath() string {
+	return d.GetSSHKeyPath() + ".pub"
 }
 
-func (d *Driver) publicSSHKeyPath() string {
-	return d.sshKeyPath() + ".pub"
+// Make a boot2docker userdata.tar key bundle
+func (d *Driver) generateKeyBundle() error {
+	log.Debugf("Creating Tar key bundle...")
+
+	magicString := "boot2docker, this is vmware speaking"
+
+	tf, err := os.Create(path.Join(d.storePath, "userdata.tar"))
+	if err != nil {
+		return err
+	}
+	defer tf.Close()
+	var fileWriter io.WriteCloser = tf
+
+	tw := tar.NewWriter(fileWriter)
+	defer tw.Close()
+
+	// magicString first so we can figure out who originally wrote the tar.
+	file := &tar.Header{Name: magicString, Size: int64(len(magicString))}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(magicString)); err != nil {
+		return err
+	}
+	// .ssh/key.pub => authorized_keys
+	file = &tar.Header{Name: ".ssh", Typeflag: tar.TypeDir, Mode: 0700}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	pubKey, err := ioutil.ReadFile(d.publicSSHKeyPath())
+	if err != nil {
+		return err
+	}
+	file = &tar.Header{Name: ".ssh/authorized_keys", Size: int64(len(pubKey)), Mode: 0644}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(pubKey)); err != nil {
+		return err
+	}
+	file = &tar.Header{Name: ".ssh/authorized_keys2", Size: int64(len(pubKey)), Mode: 0644}
+	if err := tw.WriteHeader(file); err != nil {
+		return err
+	}
+	if _, err := tw.Write([]byte(pubKey)); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	return nil
+
 }
