@@ -15,7 +15,6 @@ import (
 	"github.com/codegangsta/cli"
 	"github.com/skarademir/naturalsort"
 
-	_ "./drivers/sdc" 
 	"github.com/docker/machine/drivers"
 	_ "github.com/docker/machine/drivers/amazonec2"
 	_ "github.com/docker/machine/drivers/azure"
@@ -25,6 +24,7 @@ import (
 	_ "github.com/docker/machine/drivers/none"
 	_ "github.com/docker/machine/drivers/openstack"
 	_ "github.com/docker/machine/drivers/rackspace"
+	_ "github.com/docker/machine/drivers/sdc"
 	_ "github.com/docker/machine/drivers/softlayer"
 	_ "github.com/docker/machine/drivers/virtualbox"
 	_ "github.com/docker/machine/drivers/vmwarefusion"
