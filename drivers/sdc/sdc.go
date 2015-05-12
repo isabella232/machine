@@ -464,8 +464,8 @@ func (d *Driver) GenerateCertificates() error {
 		return err
 	}
 
-	log.Infof("Generating sdc-docker client certificates")
-	log.Infof("You will be prompted for your SSH private key password (if it's protected)")
+	log.Infof("Generating sdc-docker client certificates - you will be prompted for")
+	log.Infof("your SSH private key password (if it's password protected).")
 
 	var keyFile = path.Join(utils.GetMachineDir(), d.MachineName, "key.pem")
 	var csrFile = path.Join(utils.GetMachineDir(), d.MachineName, "cert.csr")
