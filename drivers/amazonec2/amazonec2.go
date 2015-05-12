@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/drivers/amazonec2/amz"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
@@ -36,47 +37,39 @@ var (
 )
 
 type Driver struct {
-	Id                 string
-	AccessKey          string
-	SecretKey          string
-	SessionToken       string
-	Region             string
-	AMI                string
-	SSHKeyID           int
-	SSHUser            string
-	SSHPort            int
-	KeyName            string
-	InstanceId         string
-	InstanceType       string
-	IPAddress          string
-	PrivateIPAddress   string
-	MachineName        string
-	SecurityGroupId    string
-	SecurityGroupName  string
-	ReservationId      string
-	RootSize           int64
-	IamInstanceProfile string
-	VpcId              string
-	SubnetId           string
-	Zone               string
-	CaCertPath         string
-	PrivateKeyPath     string
-	SwarmMaster        bool
-	SwarmHost          string
-	SwarmDiscovery     string
-	storePath          string
-	keyPath            string
-}
-
-type CreateFlags struct {
-	AccessKey          *string
-	SecretKey          *string
-	Region             *string
-	AMI                *string
-	InstanceType       *string
-	SubnetId           *string
-	RootSize           *int64
-	IamInstanceProfile *string
+	Id                  string
+	AccessKey           string
+	SecretKey           string
+	SessionToken        string
+	Region              string
+	AMI                 string
+	SSHKeyID            int
+	SSHUser             string
+	SSHPort             int
+	KeyName             string
+	InstanceId          string
+	InstanceType        string
+	IPAddress           string
+	PrivateIPAddress    string
+	MachineName         string
+	SecurityGroupId     string
+	SecurityGroupName   string
+	ReservationId       string
+	RootSize            int64
+	IamInstanceProfile  string
+	VpcId               string
+	SubnetId            string
+	Zone                string
+	CaCertPath          string
+	PrivateKeyPath      string
+	SwarmMaster         bool
+	SwarmHost           string
+	SwarmDiscovery      string
+	storePath           string
+	keyPath             string
+	RequestSpotInstance bool
+	SpotPrice           string
+	PrivateIPOnly       bool
 }
 
 func init() {
@@ -157,6 +150,25 @@ func GetCreateFlags() []cli.Flag {
 			Name:  "amazonec2-iam-instance-profile",
 			Usage: "AWS IAM Instance Profile",
 		},
+		cli.StringFlag{
+			Name:   "amazonec2-ssh-user",
+			Usage:  "set the name of the ssh user",
+			Value:  "ubuntu",
+			EnvVar: "AWS_SSH_USER",
+		},
+		cli.BoolFlag{
+			Name:  "amazonec2-request-spot-instance",
+			Usage: "Set this flag to request spot instance",
+		},
+		cli.StringFlag{
+			Name:  "amazonec2-spot-price",
+			Usage: "AWS spot instance bid price (in dollar)",
+			Value: "0.50",
+		},
+		cli.BoolFlag{
+			Name:  "amazonec2-private-address-only",
+			Usage: "Only use a private IP address",
+		},
 	}
 }
 
@@ -199,6 +211,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SessionToken = flags.String("amazonec2-session-token")
 	d.Region = region
 	d.AMI = image
+	d.RequestSpotInstance = flags.Bool("amazonec2-request-spot-instance")
+	d.SpotPrice = flags.String("amazonec2-spot-price")
 	d.InstanceType = flags.String("amazonec2-instance-type")
 	d.VpcId = flags.String("amazonec2-vpc-id")
 	d.SubnetId = flags.String("amazonec2-subnet-id")
@@ -210,8 +224,9 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SwarmMaster = flags.Bool("swarm-master")
 	d.SwarmHost = flags.String("swarm-host")
 	d.SwarmDiscovery = flags.String("swarm-discovery")
-	d.SSHUser = "ubuntu"
+	d.SSHUser = flags.String("amazonec2-ssh-user")
 	d.SSHPort = 22
+	d.PrivateIPOnly = flags.Bool("amazonec2-private-address-only")
 
 	if d.AccessKey == "" {
 		return fmt.Errorf("amazonec2 driver requires the --amazonec2-access-key option")
@@ -340,10 +355,34 @@ func (d *Driver) Create() error {
 	}
 
 	log.Debugf("launching instance in subnet %s", d.SubnetId)
-	instance, err := d.getClient().RunInstance(d.AMI, d.InstanceType, d.Zone, 1, 1, d.SecurityGroupId, d.KeyName, d.SubnetId, bdm, d.IamInstanceProfile)
-
-	if err != nil {
-		return fmt.Errorf("Error launching instance: %s", err)
+	var instance amz.EC2Instance
+	if d.RequestSpotInstance {
+		spotInstanceRequestId, err := d.getClient().RequestSpotInstances(d.AMI, d.InstanceType, d.Zone, 1, d.SecurityGroupId, d.KeyName, d.SubnetId, bdm, d.IamInstanceProfile, d.SpotPrice)
+		if err != nil {
+			return fmt.Errorf("Error request spot instance: %s", err)
+		}
+		var instanceId string
+		var spotInstanceRequestStatus string
+		log.Info("Waiting for spot instance...")
+		// check until fulfilled
+		for instanceId == "" {
+			time.Sleep(time.Second * 5)
+			spotInstanceRequestStatus, instanceId, err = d.getClient().DescribeSpotInstanceRequests(spotInstanceRequestId)
+			if err != nil {
+				return fmt.Errorf("Error describe spot instance request: %s", err)
+			}
+			log.Debugf("spot instance request status: %s", spotInstanceRequestStatus)
+		}
+		instance, err = d.getClient().GetInstance(instanceId)
+		if err != nil {
+			return fmt.Errorf("Error get instance: %s", err)
+		}
+	} else {
+		inst, err := d.getClient().RunInstance(d.AMI, d.InstanceType, d.Zone, 1, 1, d.SecurityGroupId, d.KeyName, d.SubnetId, bdm, d.IamInstanceProfile, d.PrivateIPOnly)
+		if err != nil {
+			return fmt.Errorf("Error launching instance: %s", err)
+		}
+		instance = inst
 	}
 
 	d.InstanceId = instance.InstanceId
@@ -365,18 +404,12 @@ func (d *Driver) Create() error {
 		d.PrivateIPAddress,
 	)
 
-	log.Infof("Waiting for SSH on %s:%d", d.IPAddress, 22)
-
-	if err := ssh.WaitForTCP(fmt.Sprintf("%s:%d", d.IPAddress, 22)); err != nil {
-		return err
-	}
-
 	log.Debug("Settings tags for instance")
 	tags := map[string]string{
 		"Name": d.MachineName,
 	}
 
-	if err = d.getClient().CreateTags(d.InstanceId, tags); err != nil {
+	if err := d.getClient().CreateTags(d.InstanceId, tags); err != nil {
 		return err
 	}
 
@@ -398,6 +431,10 @@ func (d *Driver) GetIP() (string, error) {
 	inst, err := d.getInstance()
 	if err != nil {
 		return "", err
+	}
+
+	if d.PrivateIPOnly {
+		return inst.PrivateIpAddress, nil
 	}
 
 	return inst.IpAddress, nil

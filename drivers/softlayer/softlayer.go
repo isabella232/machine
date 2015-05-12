@@ -16,18 +16,28 @@ type Client struct {
 }
 
 type HostSpec struct {
-	Hostname       string        `json:"hostname"`
-	Domain         string        `json:"domain"`
-	Cpu            int           `json:"startCpus"`
-	Memory         int           `json:"maxMemory"`
-	Datacenter     Datacenter    `json:"datacenter"`
-	SshKeys        []*SshKey     `json:"sshKeys"`
-	BlockDevices   []BlockDevice `json:"blockDevices"`
-	InstallScript  string        `json:"postInstallScriptUri"`
-	PrivateNetOnly bool          `json:"privateNetworkOnlyFlag"`
-	Os             string        `json:"operatingSystemReferenceCode"`
-	HourlyBilling  bool          `json:"hourlyBillingFlag"`
-	LocalDisk      bool          `json:"localDiskFlag"`
+	Hostname                       string            `json:"hostname"`
+	Domain                         string            `json:"domain"`
+	Cpu                            int               `json:"startCpus"`
+	Memory                         int               `json:"maxMemory"`
+	Datacenter                     Datacenter        `json:"datacenter"`
+	SshKeys                        []*SshKey         `json:"sshKeys"`
+	BlockDevices                   []BlockDevice     `json:"blockDevices"`
+	InstallScript                  string            `json:"postInstallScriptUri"`
+	PrivateNetOnly                 bool              `json:"privateNetworkOnlyFlag"`
+	Os                             string            `json:"operatingSystemReferenceCode"`
+	HourlyBilling                  bool              `json:"hourlyBillingFlag"`
+	LocalDisk                      bool              `json:"localDiskFlag"`
+	PrimaryNetworkComponent        *NetworkComponent `json:"primaryNetworkComponent,omitempty"`
+	PrimaryBackendNetworkComponent *NetworkComponent `json:"primaryBackendNetworkComponent,omitempty"`
+}
+
+type NetworkComponent struct {
+	NetworkVLAN *NetworkVLAN `json:"networkVlan"`
+}
+
+type NetworkVLAN struct {
+	Id int `json:"id"`
 }
 
 type SshKey struct {
@@ -148,6 +158,19 @@ func (c *sshKey) Create(label, key string) (*SshKey, error) {
 	}
 
 	return &k, nil
+}
+
+func (c *sshKey) Delete(id int) error {
+	var (
+		method = "DELETE"
+		uri    = fmt.Sprintf("%s/%v", c.namespace(), id)
+	)
+
+	_, err := c.newRequest(method, uri, nil)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) VirtualGuest() *virtualGuest {

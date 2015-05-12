@@ -2,27 +2,29 @@ package libmachine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/libmachine/auth"
 	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/provision"
+	"github.com/docker/machine/libmachine/provision/pkgaction"
 	"github.com/docker/machine/libmachine/swarm"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
 )
 
 var (
-	validHostNameChars   = `[a-zA-Z0-9\-\.]`
-	validHostNamePattern = regexp.MustCompile(`^` + validHostNameChars + `+$`)
+	validHostNameChars                = `[a-zA-Z0-9\-\.]`
+	validHostNamePattern              = regexp.MustCompile(`^` + validHostNameChars + `+$`)
+	errMachineMustBeRunningForUpgrade = errors.New("Error: machine must be running to upgrade.")
 )
 
 type Host struct {
@@ -62,6 +64,15 @@ type HostMetadata struct {
 	ServerCertPath string
 	ServerKeyPath  string
 	ClientCertPath string
+}
+
+type HostListItem struct {
+	Name         string
+	Active       bool
+	DriverName   string
+	State        state.State
+	URL          string
+	SwarmOptions swarm.SwarmOptions
 }
 
 func NewHost(name, driverName string, hostOptions *HostOptions) (*Host, error) {
@@ -118,7 +129,7 @@ func (h *Host) Create(name string) error {
 			return err
 		}
 
-		if err := provisioner.Provision(*h.HostOptions.SwarmOptions, *h.HostOptions.AuthOptions); err != nil {
+		if err := provisioner.Provision(*h.HostOptions.SwarmOptions, *h.HostOptions.AuthOptions, *h.HostOptions.EngineOptions); err != nil {
 			return err
 		}
 	}
@@ -126,36 +137,31 @@ func (h *Host) Create(name string) error {
 	return nil
 }
 
-func (h *Host) GetSSHCommand(args ...string) (*exec.Cmd, error) {
+func (h *Host) RunSSHCommand(command string) (ssh.Output, error) {
+	return drivers.RunSSHCommandFromDriver(h.Driver, command)
+}
+
+func (h *Host) CreateSSHShell() error {
 	addr, err := h.Driver.GetSSHHostname()
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	user := h.Driver.GetSSHUsername()
 
 	port, err := h.Driver.GetSSHPort()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	keyPath := h.Driver.GetSSHKeyPath()
-
-	cmd := ssh.GetSSHCommand(addr, port, user, keyPath, args...)
-	return cmd, nil
-}
-
-func (h *Host) MachineInState(desiredState state.State) func() bool {
-	return func() bool {
-		currentState, err := h.Driver.GetState()
-		if err != nil {
-			log.Debugf("Error getting machine state: %s", err)
-		}
-		if currentState == desiredState {
-			return true
-		}
-		return false
+	auth := &ssh.Auth{
+		Keys: []string{h.Driver.GetSSHKeyPath()},
 	}
+
+	client, err := ssh.NewClient(h.Driver.GetSSHUsername(), addr, port, auth)
+	if err != nil {
+		return err
+	}
+
+	return client.Shell()
 }
 
 func (h *Host) Start() error {
@@ -167,7 +173,7 @@ func (h *Host) Start() error {
 		return err
 	}
 
-	return utils.WaitFor(h.MachineInState(state.Running))
+	return utils.WaitFor(drivers.MachineInState(h.Driver, state.Running))
 }
 
 func (h *Host) Stop() error {
@@ -179,7 +185,7 @@ func (h *Host) Stop() error {
 		return err
 	}
 
-	return utils.WaitFor(h.MachineInState(state.Stopped))
+	return utils.WaitFor(drivers.MachineInState(h.Driver, state.Stopped))
 }
 
 func (h *Host) Kill() error {
@@ -191,16 +197,16 @@ func (h *Host) Kill() error {
 		return err
 	}
 
-	return utils.WaitFor(h.MachineInState(state.Stopped))
+	return utils.WaitFor(drivers.MachineInState(h.Driver, state.Stopped))
 }
 
 func (h *Host) Restart() error {
-	if h.MachineInState(state.Running)() {
+	if drivers.MachineInState(h.Driver, state.Running)() {
 		if err := h.Stop(); err != nil {
 			return err
 		}
 
-		if err := utils.WaitFor(h.MachineInState(state.Stopped)); err != nil {
+		if err := utils.WaitFor(drivers.MachineInState(h.Driver, state.Stopped)); err != nil {
 			return err
 		}
 	}
@@ -209,7 +215,7 @@ func (h *Host) Restart() error {
 		return err
 	}
 
-	if err := utils.WaitFor(h.MachineInState(state.Running)); err != nil {
+	if err := utils.WaitFor(drivers.MachineInState(h.Driver, state.Running)); err != nil {
 		return err
 	}
 
@@ -221,8 +227,28 @@ func (h *Host) Restart() error {
 }
 
 func (h *Host) Upgrade() error {
-	// TODO: refactor to provisioner
-	return fmt.Errorf("centralized upgrade coming in the provisioner")
+	machineState, err := h.Driver.GetState()
+	if err != nil {
+		return err
+	}
+
+	if machineState != state.Running {
+		log.Fatal(errMachineMustBeRunningForUpgrade)
+	}
+
+	provisioner, err := provision.DetectProvisioner(h.Driver)
+	if err != nil {
+		return err
+	}
+
+	if err := provisioner.Package("docker", pkgaction.Upgrade); err != nil {
+		return err
+	}
+
+	if err := provisioner.Service("docker", pkgaction.Restart); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h *Host) Remove(force bool) error {
@@ -266,7 +292,7 @@ func (h *Host) LoadConfig() error {
 		return err
 	}
 
-	meta := ValidateHostMetadata(&hostMetadata)
+	meta := FillNestedHostMetadata(&hostMetadata)
 
 	authOptions := meta.HostOptions.AuthOptions
 
@@ -291,7 +317,7 @@ func (h *Host) ConfigureAuth() error {
 		return err
 	}
 
-	if err := provision.ConfigureAuth(provisioner, *h.HostOptions.AuthOptions); err != nil {
+	if err := provision.ConfigureAuth(provisioner); err != nil {
 		return err
 	}
 
@@ -310,39 +336,58 @@ func (h *Host) SaveConfig() error {
 	return nil
 }
 
-func sshAvailableFunc(h *Host) func() bool {
-	return func() bool {
-		log.Debug("Getting to WaitForSSH function...")
-		hostname, err := h.Driver.GetSSHHostname()
-		if err != nil {
-			log.Debugf("Error getting IP address waiting for SSH: %s", err)
-			return false
-		}
-		port, err := h.Driver.GetSSHPort()
-		if err != nil {
-			log.Debugf("Error getting SSH port: %s", err)
-			return false
-		}
-		if err := ssh.WaitForTCP(fmt.Sprintf("%s:%d", hostname, port)); err != nil {
-			log.Debugf("Error waiting for TCP waiting for SSH: %s", err)
-			return false
-		}
-		cmd, err := h.GetSSHCommand("exit 0")
-		if err != nil {
-			log.Debugf("Error getting ssh command 'exit 0' : %s", err)
-			return false
-		}
-		if err := cmd.Run(); err != nil {
-			log.Debugf("Error running ssh command 'exit 0' : %s", err)
-			return false
-		}
-		return true
+func (h *Host) PrintIP() error {
+	if ip, err := h.Driver.GetIP(); err != nil {
+		return err
+	} else {
+		fmt.Println(ip)
 	}
+	return nil
 }
 
 func WaitForSSH(h *Host) error {
-	if err := utils.WaitFor(sshAvailableFunc(h)); err != nil {
-		return fmt.Errorf("Too many retries.  Last error: %s", err)
+	return drivers.WaitForSSH(h.Driver)
+}
+
+func getHostState(host Host, hostListItemsChan chan<- HostListItem) {
+	currentState, err := host.Driver.GetState()
+	if err != nil {
+		log.Errorf("error getting state for host %s: %s", host.Name, err)
 	}
-	return nil
+
+	url, err := host.GetURL()
+	if err != nil {
+		if err == drivers.ErrHostIsNotRunning {
+			url = ""
+		} else {
+			log.Errorf("error getting URL for host %s: %s", host.Name, err)
+		}
+	}
+
+	dockerHost := os.Getenv("DOCKER_HOST")
+
+	hostListItemsChan <- HostListItem{
+		Name:         host.Name,
+		Active:       dockerHost == url && currentState != state.Stopped,
+		DriverName:   host.Driver.DriverName(),
+		State:        currentState,
+		URL:          url,
+		SwarmOptions: *host.HostOptions.SwarmOptions,
+	}
+}
+
+func GetHostListItems(hostList []*Host) []HostListItem {
+	hostListItems := []HostListItem{}
+	hostListItemsChan := make(chan HostListItem)
+
+	for _, host := range hostList {
+		go getHostState(*host, hostListItemsChan)
+	}
+
+	for _ = range hostList {
+		hostListItems = append(hostListItems, <-hostListItemsChan)
+	}
+
+	close(hostListItemsChan)
+	return hostListItems
 }

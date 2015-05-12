@@ -12,20 +12,17 @@ import (
 
 	"github.com/vmware/govcloudair"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
-	"github.com/docker/docker/utils"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
-)
-
-const (
-	dockerConfigDir = "/etc/docker"
+	"github.com/docker/machine/utils"
 )
 
 type Driver struct {
+	IPAddress      string
 	UserName       string
 	UserPassword   string
 	ComputeID      string
@@ -49,25 +46,6 @@ type Driver struct {
 	SwarmDiscovery string
 	VAppID         string
 	storePath      string
-}
-
-type CreateFlags struct {
-	UserName     *string
-	UserPassword *string
-	ComputeID    *string
-	VDCID        *string
-	OrgVDCNet    *string
-	EdgeGateway  *string
-	PublicIP     *string
-	Catalog      *string
-	CatalogItem  *string
-	Name         *string
-	SSHUser      string
-	SSHPort      *int
-	DockerPort   *int
-	Provision    *bool
-	CPUCount     *int
-	MemorySize   *int
 }
 
 func init() {
@@ -432,24 +410,6 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	log.Infof("Waiting for SSH...")
-
-	if err := ssh.WaitForTCP(fmt.Sprintf("%s:%d", d.PublicIP, d.SSHPort)); err != nil {
-		return err
-	}
-
-	connTest := "ping -c 3 www.google.com >/dev/null 2>&1 && ( echo \"Connectivity and DNS tests passed.\" ) || ( echo \"Connectivity and DNS tests failed, trying to add Nameserver to resolv.conf\"; echo \"nameserver 8.8.8.8\" >> /etc/resolv.conf )"
-
-	log.Debugf("Connectivity and DNS sanity test...")
-	cmd, err := drivers.GetSSHCommandFromDriver(d, connTest)
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
 	log.Debugf("Disconnecting from vCloud Air...")
 
 	if err = p.Disconnect(); err != nil {
@@ -459,8 +419,8 @@ func (d *Driver) Create() error {
 	// Set VAppID with ID of the created VApp
 	d.VAppID = vapp.VApp.ID
 
-	return nil
-
+	d.IPAddress, err = d.GetIP()
+	return err
 }
 
 func (d *Driver) Remove() error {
@@ -538,7 +498,6 @@ func (d *Driver) Remove() error {
 	}
 
 	return nil
-
 }
 
 func (d *Driver) Start() error {
@@ -581,8 +540,8 @@ func (d *Driver) Start() error {
 		return err
 	}
 
-	return nil
-
+	d.IPAddress, err = d.GetIP()
+	return err
 }
 
 func (d *Driver) Stop() error {
@@ -625,8 +584,9 @@ func (d *Driver) Stop() error {
 		return err
 	}
 
-	return nil
+	d.IPAddress = ""
 
+	return nil
 }
 
 func (d *Driver) Restart() error {
@@ -681,8 +641,8 @@ func (d *Driver) Restart() error {
 		return err
 	}
 
-	return nil
-
+	d.IPAddress, err = d.GetIP()
+	return err
 }
 
 func (d *Driver) Kill() error {
@@ -724,8 +684,9 @@ func (d *Driver) Kill() error {
 		return err
 	}
 
-	return nil
+	d.IPAddress = ""
 
+	return nil
 }
 
 // Helpers
