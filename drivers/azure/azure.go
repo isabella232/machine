@@ -3,30 +3,25 @@ package azure
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	azure "github.com/MSOpenTech/azure-sdk-for-go"
 	"github.com/MSOpenTech/azure-sdk-for-go/clients/vmClient"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
-	"github.com/docker/docker/utils"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
-)
-
-const (
-	dockerConfigDir = "/etc/docker"
+	"github.com/docker/machine/utils"
 )
 
 type Driver struct {
+	IPAddress               string
 	MachineName             string
 	SubscriptionID          string
 	SubscriptionCert        string
@@ -261,9 +256,7 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	log.Info("Waiting for SSH...")
-	log.Debugf("Host: %s SSH Port: %d", d.getHostname(), d.SSHPort)
-	return ssh.WaitForTCP(fmt.Sprintf("%s:%d", d.getHostname(), d.SSHPort))
+	return nil
 }
 
 func (d *Driver) GetURL() (string, error) {
@@ -319,10 +312,10 @@ func (d *Driver) Start() error {
 	if err := vmClient.StartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
-	if err := d.waitForSSH(); err != nil {
-		return err
-	}
-	return d.waitForDocker()
+
+	var err error
+	d.IPAddress, err = d.GetIP()
+	return err
 }
 
 func (d *Driver) Stop() error {
@@ -339,7 +332,12 @@ func (d *Driver) Stop() error {
 
 	log.Debugf("stopping %s", d.MachineName)
 
-	return vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+		return err
+	}
+
+	d.IPAddress = ""
+	return nil
 }
 
 func (d *Driver) Remove() error {
@@ -373,10 +371,9 @@ func (d *Driver) Restart() error {
 	if err := vmClient.RestartRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
 		return err
 	}
-	if err := d.waitForSSH(); err != nil {
-		return err
-	}
-	return d.waitForDocker()
+
+	d.IPAddress, err = d.GetIP()
+	return err
 }
 
 func (d *Driver) Kill() error {
@@ -393,7 +390,12 @@ func (d *Driver) Kill() error {
 
 	log.Debugf("killing %s", d.MachineName)
 
-	return vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName)
+	if err := vmClient.ShutdownRole(d.MachineName, d.MachineName, d.MachineName); err != nil {
+		return err
+	}
+
+	d.IPAddress = ""
+	return nil
 }
 
 func generateVMName() string {
@@ -426,40 +428,6 @@ func (d *Driver) addDockerEndpoint(vmConfig *vmClient.Role) error {
 		log.Debugf("added Docker endpoint (port %d) to configuration", d.DockerPort)
 	}
 	return nil
-}
-
-func (d *Driver) waitForSSH() error {
-	log.Infof("Waiting for SSH...")
-	return ssh.WaitForTCP(fmt.Sprintf("%s:%v", d.getHostname(), d.SSHPort))
-}
-
-func (d *Driver) waitForDocker() error {
-	log.Infof("Waiting for docker daemon on host to be available...")
-	maxRepeats := 48
-	url := fmt.Sprintf("%s:%v", d.getHostname(), d.DockerPort)
-	success := waitForDockerEndpoint(url, maxRepeats)
-	if !success {
-		return errors.New("Can not run docker daemon on remote machine. Please try again.")
-	}
-	return nil
-}
-
-func waitForDockerEndpoint(url string, maxRepeats int) bool {
-	counter := 0
-	for {
-		conn, err := net.Dial("tcp", url)
-		if err != nil {
-			time.Sleep(10 * time.Second)
-			counter++
-			if counter == maxRepeats {
-				return false
-			}
-			continue
-		}
-		defer conn.Close()
-		break
-	}
-	return true
 }
 
 func (d *Driver) generateCertForAzure() error {

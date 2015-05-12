@@ -3,14 +3,10 @@ package rackspace
 import (
 	"fmt"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/drivers/openstack"
-)
-
-const (
-	dockerConfigDir = "/etc/docker"
+	"github.com/docker/machine/log"
 )
 
 // Driver is a machine driver for Rackspace. It's a specialization of the generic OpenStack one.
@@ -18,24 +14,6 @@ type Driver struct {
 	*openstack.Driver
 
 	APIKey string
-}
-
-// CreateFlags stores the command-line arguments given to "machine create".
-type CreateFlags struct {
-	Username       *string
-	APIKey         *string
-	Region         *string
-	MachineName    *string
-	EndpointType   *string
-	ImageID        *string
-	FlavorID       *string
-	SSHUser        *string
-	SSHPort        *int
-	CaCertPath     string
-	PrivateKeyPath string
-	SwarmMaster    bool
-	SwarmHost      string
-	SwarmDiscovery string
 }
 
 func init() {
@@ -76,12 +54,12 @@ func GetCreateFlags() []cli.Flag {
 		cli.StringFlag{
 			Name:  "rackspace-image-id",
 			Usage: "Rackspace image ID. Default: Ubuntu 14.04 LTS (Trusty Tahr) (PVHVM)",
-			Value: "",
 		},
 		cli.StringFlag{
-			Name:  "rackspace-flavor-id",
-			Usage: "Rackspace flavor ID. Default: General Purpose 1GB",
-			Value: "general1-1",
+			Name:   "rackspace-flavor-id",
+			Usage:  "Rackspace flavor ID. Default: General Purpose 1GB",
+			Value:  "general1-1",
+			EnvVar: "OS_FLAVOR_ID",
 		},
 		cli.StringFlag{
 			Name:  "rackspace-ssh-user",
@@ -124,10 +102,6 @@ func NewDriver(machineName string, storePath string, caCert string, privateKey s
 // DriverName is the user-visible name of this driver.
 func (d *Driver) DriverName() string {
 	return "rackspace"
-}
-
-func (d *Driver) GetDockerConfigDir() string {
-	return dockerConfigDir
 }
 
 func missingEnvOrOption(setting, envVar, opt string) error {

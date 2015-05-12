@@ -2,14 +2,20 @@ package provision
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"os/exec"
 	"path"
+	"text/template"
 
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/libmachine/auth"
+	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/provision/pkgaction"
 	"github.com/docker/machine/libmachine/swarm"
+	"github.com/docker/machine/log"
+	"github.com/docker/machine/ssh"
+	"github.com/docker/machine/state"
+	"github.com/docker/machine/utils"
 )
 
 func init() {
@@ -27,42 +33,82 @@ func NewBoot2DockerProvisioner(d drivers.Driver) Provisioner {
 type Boot2DockerProvisioner struct {
 	OsReleaseInfo *OsRelease
 	Driver        drivers.Driver
+	AuthOptions   auth.AuthOptions
+	EngineOptions engine.EngineOptions
 	SwarmOptions  swarm.SwarmOptions
 }
 
 func (provisioner *Boot2DockerProvisioner) Service(name string, action pkgaction.ServiceAction) error {
 	var (
-		cmd *exec.Cmd
 		err error
 	)
-	if name == "docker" && action == pkgaction.Stop {
-		cmd, err = provisioner.SSHCommand("if [ -e /var/run/docker.pid  ] && [ -d /proc/$(cat /var/run/docker.pid)  ]; then sudo /etc/init.d/docker stop ; exit 0; fi")
-	} else {
-		cmd, err = provisioner.SSHCommand(fmt.Sprintf("sudo /etc/init.d/%s %s", name, action.String()))
-		if err != nil {
-			return err
-		}
-	}
-	if err := cmd.Run(); err != nil {
+
+	if _, err = provisioner.SSHCommand(fmt.Sprintf("sudo /etc/init.d/%s %s", name, action.String())); err != nil {
 		return err
 	}
+
 	return nil
 }
 
+func (provisioner *Boot2DockerProvisioner) upgradeIso() error {
+	switch provisioner.Driver.DriverName() {
+	case "vmwarefusion", "vmwarevsphere":
+		return errors.New("Upgrade functionality is currently not supported for these providers, as they use a custom ISO.")
+	}
+
+	log.Info("Stopping machine to do the upgrade...")
+
+	if err := provisioner.Driver.Stop(); err != nil {
+		return err
+	}
+
+	if err := utils.WaitFor(drivers.MachineInState(provisioner.Driver, state.Stopped)); err != nil {
+		return err
+	}
+
+	machineName := provisioner.GetDriver().GetMachineName()
+
+	log.Infof("Upgrading machine %s...", machineName)
+
+	b2dutils := utils.NewB2dUtils("", "")
+
+	// Usually we call this implicitly, but call it here explicitly to get
+	// the latest boot2docker ISO.
+	if err := b2dutils.DownloadLatestBoot2Docker(); err != nil {
+		return err
+	}
+
+	// Copy the latest version of boot2docker ISO to the machine's directory
+	if err := b2dutils.CopyIsoToMachineDir("", machineName); err != nil {
+		return err
+	}
+
+	log.Infof("Starting machine back up...")
+
+	if err := provisioner.Driver.Start(); err != nil {
+		return err
+	}
+
+	return utils.WaitFor(drivers.MachineInState(provisioner.Driver, state.Running))
+}
+
 func (provisioner *Boot2DockerProvisioner) Package(name string, action pkgaction.PackageAction) error {
+	if name == "docker" && action == pkgaction.Upgrade {
+		if err := provisioner.upgradeIso(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (provisioner *Boot2DockerProvisioner) Hostname() (string, error) {
-	cmd, err := provisioner.SSHCommand(fmt.Sprintf("hostname"))
+	output, err := provisioner.SSHCommand(fmt.Sprintf("hostname"))
 	if err != nil {
 		return "", err
 	}
 
 	var so bytes.Buffer
-	cmd.Stdout = &so
-
-	if err := cmd.Run(); err != nil {
+	if _, err := so.ReadFrom(output.Stdout); err != nil {
 		return "", err
 	}
 
@@ -70,34 +116,64 @@ func (provisioner *Boot2DockerProvisioner) Hostname() (string, error) {
 }
 
 func (provisioner *Boot2DockerProvisioner) SetHostname(hostname string) error {
-	cmd, err := provisioner.SSHCommand(fmt.Sprintf(
+	if _, err := provisioner.SSHCommand(fmt.Sprintf(
 		"sudo hostname %s && echo %q | sudo tee /var/lib/boot2docker/etc/hostname",
 		hostname,
 		hostname,
-	))
-	if err != nil {
+	)); err != nil {
 		return err
 	}
 
-	return cmd.Run()
+	return nil
 }
 
 func (provisioner *Boot2DockerProvisioner) GetDockerOptionsDir() string {
 	return "/var/lib/boot2docker"
 }
 
-func (provisioner *Boot2DockerProvisioner) GenerateDockerOptions(dockerPort int, authOptions auth.AuthOptions) (*DockerOptions, error) {
-	defaultDaemonOpts := getDefaultDaemonOpts(provisioner.Driver.DriverName(), authOptions)
-	daemonOpts := fmt.Sprintf("-H tcp://0.0.0.0:%d", dockerPort)
+func (provisioner *Boot2DockerProvisioner) GetAuthOptions() auth.AuthOptions {
+	return provisioner.AuthOptions
+}
+
+func (provisioner *Boot2DockerProvisioner) GenerateDockerOptions(dockerPort int) (*DockerOptions, error) {
+	var (
+		engineCfg bytes.Buffer
+	)
+
+	driverNameLabel := fmt.Sprintf("provider=%s", provisioner.Driver.DriverName())
+	provisioner.EngineOptions.Labels = append(provisioner.EngineOptions.Labels, driverNameLabel)
+
+	engineConfigTmpl := `
+EXTRA_ARGS='
+{{ range .EngineOptions.Labels }}--label {{.}}
+{{ end }}{{ range .EngineOptions.InsecureRegistry }}--insecure-registry {{.}}
+{{ end }}{{ range .EngineOptions.RegistryMirror }}--registry-mirror {{.}}
+{{ end }}{{ range .EngineOptions.ArbitraryFlags }}--{{.}}
+{{ end }}
+'
+CACERT={{.AuthOptions.CaCertRemotePath}}
+DOCKER_HOST='-H tcp://0.0.0.0:{{.DockerPort}}'
+DOCKER_STORAGE={{.EngineOptions.StorageDriver}}
+DOCKER_TLS=auto
+SERVERKEY={{.AuthOptions.ServerKeyRemotePath}}
+SERVERCERT={{.AuthOptions.ServerCertRemotePath}}
+`
+	t, err := template.New("engineConfig").Parse(engineConfigTmpl)
+	if err != nil {
+		return nil, err
+	}
+
+	engineConfigContext := EngineConfigContext{
+		DockerPort:    dockerPort,
+		AuthOptions:   provisioner.AuthOptions,
+		EngineOptions: provisioner.EngineOptions,
+	}
+
+	t.Execute(&engineCfg, engineConfigContext)
+
 	daemonOptsDir := path.Join(provisioner.GetDockerOptionsDir(), "profile")
-	opts := fmt.Sprintf("%s %s", defaultDaemonOpts, daemonOpts)
-	daemonCfg := fmt.Sprintf(`EXTRA_ARGS='%s'
-CACERT=%s
-SERVERCERT=%s
-SERVERKEY=%s
-DOCKER_TLS=no`, opts, authOptions.CaCertRemotePath, authOptions.ServerCertRemotePath, authOptions.ServerKeyRemotePath)
 	return &DockerOptions{
-		EngineOptions:     daemonCfg,
+		EngineOptions:     engineCfg.String(),
 		EngineOptionsPath: daemonOptsDir,
 	}, nil
 }
@@ -110,7 +186,15 @@ func (provisioner *Boot2DockerProvisioner) SetOsReleaseInfo(info *OsRelease) {
 	provisioner.OsReleaseInfo = info
 }
 
-func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.SwarmOptions, authOptions auth.AuthOptions) error {
+func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.SwarmOptions, authOptions auth.AuthOptions, engineOptions engine.EngineOptions) error {
+	provisioner.SwarmOptions = swarmOptions
+	provisioner.AuthOptions = authOptions
+	provisioner.EngineOptions = engineOptions
+
+	if provisioner.EngineOptions.StorageDriver == "" {
+		provisioner.EngineOptions.StorageDriver = "aufs"
+	}
+
 	if err := provisioner.SetHostname(provisioner.Driver.GetMachineName()); err != nil {
 		return err
 	}
@@ -119,7 +203,24 @@ func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.SwarmOpt
 		return err
 	}
 
-	if err := ConfigureAuth(provisioner, authOptions); err != nil {
+	ip, err := provisioner.GetDriver().GetIP()
+	if err != nil {
+		return err
+	}
+
+	// b2d hosts need to wait for the daemon to be up
+	// before continuing with provisioning
+	if err := utils.WaitForDocker(ip, 2376); err != nil {
+		return err
+	}
+
+	if err := makeDockerOptionsDir(provisioner); err != nil {
+		return err
+	}
+
+	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
+
+	if err := ConfigureAuth(provisioner); err != nil {
 		return err
 	}
 
@@ -130,8 +231,8 @@ func (provisioner *Boot2DockerProvisioner) Provision(swarmOptions swarm.SwarmOpt
 	return nil
 }
 
-func (provisioner *Boot2DockerProvisioner) SSHCommand(args ...string) (*exec.Cmd, error) {
-	return drivers.GetSSHCommandFromDriver(provisioner.Driver, args...)
+func (provisioner *Boot2DockerProvisioner) SSHCommand(args string) (ssh.Output, error) {
+	return drivers.RunSSHCommandFromDriver(provisioner.Driver, args)
 }
 
 func (provisioner *Boot2DockerProvisioner) GetDriver() drivers.Driver {

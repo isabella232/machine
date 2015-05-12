@@ -8,17 +8,16 @@ import (
 	"regexp"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 )
 
 const (
-	dockerConfigDir = "/etc/docker"
-	ApiEndpoint     = "https://api.softlayer.com/rest/v3"
+	ApiEndpoint = "https://api.softlayer.com/rest/v3"
 )
 
 type Driver struct {
@@ -32,6 +31,7 @@ type Driver struct {
 	MachineName    string
 	CaCertPath     string
 	PrivateKeyPath string
+	SSHKeyID       int
 	SwarmMaster    bool
 	SwarmHost      string
 	SwarmDiscovery string
@@ -48,6 +48,8 @@ type deviceConfig struct {
 	HourlyBilling bool
 	LocalDisk     bool
 	PrivateNet    bool
+	PublicVLAN    int
+	PrivateVLAN   int
 }
 
 func init() {
@@ -182,6 +184,18 @@ func GetCreateFlags() []cli.Flag {
 			Usage:  "OS image for machine",
 			Value:  "UBUNTU_LATEST",
 		},
+		cli.IntFlag{
+			EnvVar: "SOFTLAYER_PUBLIC_VLAN_ID",
+			Name:   "softlayer-public-vlan-id",
+			Usage:  "",
+			Value:  0,
+		},
+		cli.IntFlag{
+			EnvVar: "SOFTLAYER_PRIVATE_VLAN_ID",
+			Name:   "softlayer-private-vlan-id",
+			Usage:  "",
+			Value:  0,
+		},
 	}
 }
 
@@ -198,6 +212,16 @@ func validateDeviceConfig(c *deviceConfig) error {
 	}
 	if c.Cpu < 1 {
 		return fmt.Errorf("Missing required setting - --softlayer-cpu")
+	}
+
+	if c.PrivateNet && c.PublicVLAN > 0 {
+		return fmt.Errorf("Can not specify both --softlayer-private-net-only and --softlayer-public-vlan-id")
+	}
+	if c.PublicVLAN > 0 && c.PrivateVLAN == 0 {
+		return fmt.Errorf("Missing required setting - --softlayer-private-vlan-id (because --softlayer-public-vlan-id is specified)")
+	}
+	if c.PrivateVLAN > 0 && !c.PrivateNet && c.PublicVLAN == 0 {
+		return fmt.Errorf("Missing required setting - --softlayer-public-vlan-id (because --softlayer-private-vlan-id is specified)")
 	}
 
 	return nil
@@ -248,6 +272,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		HourlyBilling: flags.Bool("softlayer-hourly-billing"),
 		Image:         flags.String("softlayer-image"),
 		Region:        flags.String("softlayer-region"),
+		PublicVLAN:    flags.Int("softlayer-public-vlan-id"),
+		PrivateVLAN:   flags.Int("softlayer-private-vlan-id"),
 	}
 	return validateDeviceConfig(d.deviceConfig)
 }
@@ -275,7 +301,11 @@ func (d *Driver) GetIP() (string, error) {
 	if d.IPAddress != "" {
 		return d.IPAddress, nil
 	}
-	return d.getClient().VirtualGuest().GetPublicIp(d.Id)
+	if d.deviceConfig != nil && d.deviceConfig.PrivateNet == true {
+		return d.getClient().VirtualGuest().GetPrivateIp(d.Id)
+	} else {
+		return d.getClient().VirtualGuest().GetPublicIp(d.Id)
+	}
 }
 
 func (d *Driver) GetState() (state.State, error) {
@@ -344,6 +374,7 @@ func (d *Driver) getIp() (string, error) {
 		// not a perfect regex, but should be just fine for our needs
 		exp := regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`)
 		if exp.MatchString(ip) {
+			d.IPAddress = ip
 			return ip, nil
 		}
 		time.Sleep(2 * time.Second)
@@ -378,13 +409,17 @@ func (d *Driver) waitForSetupTransactions() {
 }
 
 func (d *Driver) Create() error {
+	spec := d.buildHostSpec()
+
 	log.Infof("Creating SSH key...")
 	key, err := d.createSSHKey()
 	if err != nil {
 		return err
 	}
 
-	spec := d.buildHostSpec()
+	log.Infof("SSH key %s (%d) created in SoftLayer", key.Label, key.Id)
+	d.SSHKeyID = key.Id
+
 	spec.SshKeys = []*SshKey{key}
 
 	id, err := d.getClient().VirtualGuest().Create(spec)
@@ -395,17 +430,6 @@ func (d *Driver) Create() error {
 	d.getIp()
 	d.waitForStart()
 	d.waitForSetupTransactions()
-	ssh.WaitForTCP(d.IPAddress + ":22")
-
-	cmd, err := drivers.GetSSHCommandFromDriver(d, "sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install -yq curl")
-	if err != nil {
-		return err
-
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-
-	}
 
 	return nil
 }
@@ -420,10 +444,26 @@ func (d *Driver) buildHostSpec() *HostSpec {
 		Os:             d.deviceConfig.Image,
 		HourlyBilling:  d.deviceConfig.HourlyBilling,
 		PrivateNetOnly: d.deviceConfig.PrivateNet,
+		LocalDisk:      d.deviceConfig.LocalDisk,
 	}
 	if d.deviceConfig.DiskSize > 0 {
 		spec.BlockDevices = []BlockDevice{{Device: "0", DiskImage: DiskImage{Capacity: d.deviceConfig.DiskSize}}}
 	}
+	if d.deviceConfig.PublicVLAN > 0 {
+		spec.PrimaryNetworkComponent = &NetworkComponent{
+			NetworkVLAN: &NetworkVLAN{
+				Id: d.deviceConfig.PublicVLAN,
+			},
+		}
+	}
+	if d.deviceConfig.PrivateVLAN > 0 {
+		spec.PrimaryBackendNetworkComponent = &NetworkComponent{
+			NetworkVLAN: &NetworkVLAN{
+				Id: d.deviceConfig.PrivateVLAN,
+			},
+		}
+	}
+	log.Debugf("Built host spec %#v", spec)
 	return spec
 }
 
@@ -452,7 +492,9 @@ func (d *Driver) publicSSHKeyPath() string {
 func (d *Driver) Kill() error {
 	return d.getClient().VirtualGuest().PowerOff(d.Id)
 }
+
 func (d *Driver) Remove() error {
+	log.Infof("Canceling SoftLayer instance %d...", d.Id)
 	var err error
 	for i := 0; i < 5; i++ {
 		if err = d.getClient().VirtualGuest().Cancel(d.Id); err != nil {
@@ -461,7 +503,16 @@ func (d *Driver) Remove() error {
 		}
 		break
 	}
-	return err
+	if err != nil {
+		return err
+	}
+
+	log.Infof("Removing SSH Key %d...", d.SSHKeyID)
+	if err = d.getClient().SshKey().Delete(d.SSHKeyID); err != nil {
+		return err
+	}
+
+	return nil
 }
 func (d *Driver) Restart() error {
 	return d.getClient().VirtualGuest().Reboot(d.Id)

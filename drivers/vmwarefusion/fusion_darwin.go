@@ -19,9 +19,9 @@ import (
 	"text/template"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
@@ -29,10 +29,9 @@ import (
 )
 
 const (
-	B2D_USER        = "docker"
-	B2D_PASS        = "tcuser"
-	dockerConfigDir = "/var/lib/boot2docker"
-	isoFilename     = "boot2docker-1.5.0-GH747.iso"
+	B2DUser     = "docker"
+	B2DPass     = "tcuser"
+	isoFilename = "boot2docker-1.6.0-vmw.iso"
 )
 
 // Driver for VMware Fusion
@@ -41,7 +40,7 @@ type Driver struct {
 	IPAddress      string
 	Memory         int
 	DiskSize       int
-	CPUs           int
+	CPU            int
 	ISO            string
 	Boot2DockerURL string
 	CaCertPath     string
@@ -54,12 +53,6 @@ type Driver struct {
 	SSHPort        int
 
 	storePath string
-}
-
-type CreateFlags struct {
-	Boot2DockerURL *string
-	Memory         *int
-	DiskSize       *int
 }
 
 func init() {
@@ -77,6 +70,12 @@ func GetCreateFlags() []cli.Flag {
 			EnvVar: "FUSION_BOOT2DOCKER_URL",
 			Name:   "vmwarefusion-boot2docker-url",
 			Usage:  "Fusion URL for boot2docker image",
+		},
+		cli.IntFlag{
+			EnvVar: "FUSION_CPU_COUNT",
+			Name:   "vmwarefusion-cpu-count",
+			Usage:  "number of CPUs for the machine (-1 to use the number of CPUs available)",
+			Value:  1,
 		},
 		cli.IntFlag{
 			EnvVar: "FUSION_MEMORY_SIZE",
@@ -143,21 +142,20 @@ func (d *Driver) DriverName() string {
 
 func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Memory = flags.Int("vmwarefusion-memory-size")
+	d.CPU = flags.Int("vmwarefusion-cpu-count")
 	d.DiskSize = flags.Int("vmwarefusion-disk-size")
 	d.Boot2DockerURL = flags.String("vmwarefusion-boot2docker-url")
 	d.ISO = path.Join(d.storePath, isoFilename)
 	d.SwarmMaster = flags.Bool("swarm-master")
 	d.SwarmHost = flags.String("swarm-host")
 	d.SwarmDiscovery = flags.String("swarm-discovery")
-	d.CPUS = runtime.NumCPU()
 	d.SSHUser = "docker"
 	d.SSHPort = 22
 
 	// We support a maximum of 16 cpu to be consistent with Virtual Hardware 10
 	// specs.
-	d.CPUs = int(runtime.NumCPU())
-	if d.CPUs > 16 {
-		d.CPUs = 16
+	if d.CPU > 16 {
+		d.CPU = 16
 	}
 
 	return nil
@@ -211,16 +209,14 @@ func (d *Driver) Create() error {
 		if err := os.Mkdir(imgPath, 0700); err != nil {
 			return err
 		}
-
 	}
 
 	if d.Boot2DockerURL != "" {
 		isoURL = d.Boot2DockerURL
 		log.Infof("Downloading boot2docker.iso from %s...", isoURL)
-		if err := b2dutils.DownloadISO(commonIsoPath, isoFilename, isoURL); err != nil {
+		if err := b2dutils.DownloadISO(d.storePath, isoFilename, isoURL); err != nil {
 			return err
 		}
-
 	} else {
 		// TODO: until vmw tools are merged into b2d master
 		// we will use the iso from the vmware team.
@@ -232,7 +228,7 @@ func (d *Driver) Create() error {
 		//}
 
 		// see https://github.com/boot2docker/boot2docker/pull/747
-		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/1.5.0-GH747/boot2docker-1.5.0-GH747.iso"
+		isoURL := "https://github.com/cloudnativeapps/boot2docker/releases/download/v1.6.0-vmw/boot2docker-1.6.0-vmw.iso"
 
 		if _, err := os.Stat(commonIsoPath); os.IsNotExist(err) {
 			log.Infof("Downloading boot2docker.iso to %s...", commonIsoPath)
@@ -246,6 +242,7 @@ func (d *Driver) Create() error {
 				return err
 			}
 		}
+
 		isoDest := filepath.Join(d.storePath, isoFilename)
 		if err := utils.CopyFile(commonIsoPath, isoDest); err != nil {
 			return err
@@ -286,9 +283,8 @@ func (d *Driver) Create() error {
 		}
 	}
 
-	if err := d.Start(); err != nil {
-		return err
-	}
+	log.Infof("Starting %s...", d.MachineName)
+	vmrun("start", d.vmxPath(), "nogui")
 
 	var ip string
 
@@ -320,20 +316,59 @@ func (d *Driver) Create() error {
 	}
 
 	// Test if /var/lib/boot2docker exists
-	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "directoryExistsInGuest", d.vmxPath(), "/var/lib/boot2docker")
+	vmrun("-gu", B2DUser, "-gp", B2DPass, "directoryExistsInGuest", d.vmxPath(), "/var/lib/boot2docker")
 
 	// Copy SSH keys bundle
-	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "CopyFileFromHostToGuest", d.vmxPath(), path.Join(d.storePath, "userdata.tar"), "/home/docker/userdata.tar")
+	vmrun("-gu", B2DUser, "-gp", B2DPass, "CopyFileFromHostToGuest", d.vmxPath(), path.Join(d.storePath, "userdata.tar"), "/home/docker/userdata.tar")
 
 	// Expand tar file.
-	vmrun("-gu", B2D_USER, "-gp", B2D_PASS, "runScriptInGuest", d.vmxPath(), "/bin/sh", "sudo /bin/mv /home/docker/userdata.tar /var/lib/boot2docker/userdata.tar && sudo tar xf /var/lib/boot2docker/userdata.tar -C /home/docker/ > /var/log/userdata.log 2>&1 && sudo chown -R docker:staff /home/docker")
+	vmrun("-gu", B2DUser, "-gp", B2DPass, "runScriptInGuest", d.vmxPath(), "/bin/sh", "sudo /bin/mv /home/docker/userdata.tar /var/lib/boot2docker/userdata.tar && sudo tar xf /var/lib/boot2docker/userdata.tar -C /home/docker/ > /var/log/userdata.log 2>&1 && sudo chown -R docker:staff /home/docker")
 
+	// Enable Shared Folders
+	vmrun("-gu", B2DUser, "-gp", B2DPass, "enableSharedFolders", d.vmxPath())
+
+	var shareName, shareDir string // TODO configurable at some point
+	switch runtime.GOOS {
+	case "darwin":
+		shareName = "Users"
+		shareDir = "/Users"
+		// TODO "linux" and "windows"
+	}
+
+	if shareDir != "" {
+		if _, err := os.Stat(shareDir); err != nil && !os.IsNotExist(err) {
+			return err
+		} else if !os.IsNotExist(err) {
+			// add shared folder, create mountpoint and mount it.
+			vmrun("-gu", B2DUser, "-gp", B2DPass, "addSharedFolder", d.vmxPath(), shareName, shareDir)
+			vmrun("-gu", B2DUser, "-gp", B2DPass, "runScriptInGuest", d.vmxPath(), "/bin/sh", "sudo mkdir "+shareDir+" && sudo mount -t vmhgfs .host:/"+shareName+" "+shareDir)
+		}
+	}
 	return nil
 }
 
 func (d *Driver) Start() error {
 	log.Infof("Starting %s...", d.MachineName)
 	vmrun("start", d.vmxPath(), "nogui")
+
+	log.Debugf("Mounting Shared Folders...")
+	var shareName, shareDir string // TODO configurable at some point
+	switch runtime.GOOS {
+	case "darwin":
+		shareName = "Users"
+		shareDir = "/Users"
+		// TODO "linux" and "windows"
+	}
+
+	if shareDir != "" {
+		if _, err := os.Stat(shareDir); err != nil && !os.IsNotExist(err) {
+			return err
+		} else if !os.IsNotExist(err) {
+			// create mountpoint and mount shared folder
+			vmrun("-gu", B2DUser, "-gp", B2DPass, "runScriptInGuest", d.vmxPath(), "/bin/sh", "sudo mkdir "+shareDir+" && sudo mount -t vmhgfs .host:/"+shareName+" "+shareDir)
+		}
+	}
+
 	return nil
 }
 
@@ -369,7 +404,7 @@ func (d *Driver) Kill() error {
 }
 
 func (d *Driver) Upgrade() error {
-	return fmt.Errorf("VMware Fusion does not currently support the upgrade operation.")
+	return fmt.Errorf("VMware Fusion does not currently support the upgrade operation")
 }
 
 func (d *Driver) vmxPath() string {
@@ -504,7 +539,7 @@ func (d *Driver) generateKeyBundle() error {
 		return err
 	}
 	defer tf.Close()
-	var fileWriter io.WriteCloser = tf
+	var fileWriter = tf
 
 	tw := tar.NewWriter(fileWriter)
 	defer tw.Close()

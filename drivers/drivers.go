@@ -3,12 +3,11 @@ package drivers
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"sort"
 
 	"github.com/codegangsta/cli"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
-	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
 )
 
@@ -143,6 +142,20 @@ func GetCreateFlags() []cli.Flag {
 	return flags
 }
 
+func GetCreateFlagsForDriver(name string) ([]cli.Flag, error) {
+
+	for driverName := range drivers {
+		if name == driverName {
+			driver := drivers[driverName]
+			flags := driver.GetCreateFlags()
+			sort.Sort(ByFlagName(flags))
+			return flags, nil
+		}
+	}
+
+	return nil, fmt.Errorf("Driver %s not found", name)
+}
+
 // GetDriverNames returns a slice of all registered driver names
 func GetDriverNames() []string {
 	names := make([]string, 0, len(drivers))
@@ -159,19 +172,15 @@ type DriverOptions interface {
 	Bool(key string) bool
 }
 
-func GetSSHCommandFromDriver(d Driver, args ...string) (*exec.Cmd, error) {
-	host, err := d.GetSSHHostname()
-	if err != nil {
-		return nil, err
+func MachineInState(d Driver, desiredState state.State) func() bool {
+	return func() bool {
+		currentState, err := d.GetState()
+		if err != nil {
+			log.Debugf("Error getting machine state: %s", err)
+		}
+		if currentState == desiredState {
+			return true
+		}
+		return false
 	}
-
-	port, err := d.GetSSHPort()
-	if err != nil {
-		return nil, err
-	}
-
-	user := d.GetSSHUsername()
-	keyPath := d.GetSSHKeyPath()
-
-	return ssh.GetSSHCommand(host, port, user, keyPath, args...), nil
 }

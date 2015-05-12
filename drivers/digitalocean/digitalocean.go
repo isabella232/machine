@@ -7,17 +7,13 @@ import (
 	"time"
 
 	"code.google.com/p/goauth2/oauth"
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/cli"
 	"github.com/digitalocean/godo"
 	"github.com/docker/machine/drivers"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/ssh"
 	"github.com/docker/machine/state"
-)
-
-const (
-	dockerConfigDir = "/etc/docker"
 )
 
 type Driver struct {
@@ -234,12 +230,6 @@ func (d *Driver) Create() error {
 		newDroplet.Droplet.ID,
 		d.IPAddress)
 
-	log.Infof("Waiting for SSH...")
-
-	if err := ssh.WaitForTCP(fmt.Sprintf("%s:%d", d.IPAddress, 22)); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -334,10 +324,6 @@ func (d *Driver) Restart() error {
 func (d *Driver) Kill() error {
 	_, _, err := d.getClient().DropletActions.PowerOff(d.DropletID)
 	return err
-}
-
-func (d *Driver) GetDockerConfigDir() string {
-	return dockerConfigDir
 }
 
 func (d *Driver) getClient() *godo.Client {

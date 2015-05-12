@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/machine/libmachine/auth"
 	"github.com/docker/machine/libmachine/provision/pkgaction"
 	"github.com/docker/machine/libmachine/swarm"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/utils"
 )
 
@@ -25,29 +25,47 @@ type DockerOptions struct {
 func installDockerGeneric(p Provisioner) error {
 	// install docker - until cloudinit we use ubuntu everywhere so we
 	// just install it using the docker repos
-	cmd, err := p.SSHCommand("if ! type docker; then curl -sSL https://get.docker.com | sh -; fi")
-	if err != nil {
-		return err
-	}
+	if output, err := p.SSHCommand("if ! type docker; then curl -sSL https://get.docker.com | sh -; fi"); err != nil {
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(output.Stderr); err != nil {
+			return err
+		}
 
-	// HACK: the script above will output debug to stderr; we save it and
-	// then check if the command returned an error; if so, we show the debug
-	var buf bytes.Buffer
-	cmd.Stderr = &buf
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("error installing docker: %s\n%s\n", err, string(buf.Bytes()))
+		return fmt.Errorf("error installing docker: %s\n", buf.String())
 	}
 
 	return nil
 }
 
-func ConfigureAuth(p Provisioner, authOptions auth.AuthOptions) error {
+func makeDockerOptionsDir(p Provisioner) error {
+	dockerDir := p.GetDockerOptionsDir()
+	if _, err := p.SSHCommand(fmt.Sprintf("sudo mkdir -p %s", dockerDir)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func setRemoteAuthOptions(p Provisioner) auth.AuthOptions {
+	dockerDir := p.GetDockerOptionsDir()
+	authOptions := p.GetAuthOptions()
+
+	// due to windows clients, we cannot use filepath.Join as the paths
+	// will be mucked on the linux hosts
+	authOptions.CaCertRemotePath = path.Join(dockerDir, "ca.pem")
+	authOptions.ServerCertRemotePath = path.Join(dockerDir, "server.pem")
+	authOptions.ServerKeyRemotePath = path.Join(dockerDir, "server-key.pem")
+
+	return authOptions
+}
+
+func ConfigureAuth(p Provisioner) error {
 	var (
 		err error
 	)
 
 	machineName := p.GetDriver().GetMachineName()
+	authOptions := p.GetAuthOptions()
 	org := machineName
 	bits := 2048
 
@@ -97,62 +115,30 @@ func ConfigureAuth(p Provisioner, authOptions auth.AuthOptions) error {
 		return err
 	}
 
-	dockerDir := p.GetDockerOptionsDir()
-
-	cmd, err := p.SSHCommand(fmt.Sprintf("sudo mkdir -p %s", dockerDir))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
 	// upload certs and configure TLS auth
 	caCert, err := ioutil.ReadFile(authOptions.CaCertPath)
 	if err != nil {
 		return err
 	}
 
-	// due to windows clients, we cannot use filepath.Join as the paths
-	// will be mucked on the linux hosts
-	machineCaCertPath := path.Join(dockerDir, "ca.pem")
-	authOptions.CaCertRemotePath = machineCaCertPath
-
 	serverCert, err := ioutil.ReadFile(authOptions.ServerCertPath)
 	if err != nil {
 		return err
 	}
-	machineServerCertPath := path.Join(dockerDir, "server.pem")
-	authOptions.ServerCertRemotePath = machineServerCertPath
-
 	serverKey, err := ioutil.ReadFile(authOptions.ServerKeyPath)
 	if err != nil {
 		return err
 	}
-	machineServerKeyPath := path.Join(dockerDir, "server-key.pem")
-	authOptions.ServerKeyRemotePath = machineServerKeyPath
 
-	cmd, err = p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(caCert), machineCaCertPath))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err := p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(caCert), authOptions.CaCertRemotePath)); err != nil {
 		return err
 	}
 
-	cmd, err = p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(serverKey), machineServerKeyPath))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err := p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(serverCert), authOptions.ServerCertRemotePath)); err != nil {
 		return err
 	}
 
-	cmd, err = p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(serverCert), machineServerCertPath))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err := p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee %s", string(serverKey), authOptions.ServerKeyRemotePath)); err != nil {
 		return err
 	}
 
@@ -174,16 +160,12 @@ func ConfigureAuth(p Provisioner, authOptions auth.AuthOptions) error {
 		dockerPort = dPort
 	}
 
-	dkrcfg, err := p.GenerateDockerOptions(dockerPort, authOptions)
+	dkrcfg, err := p.GenerateDockerOptions(dockerPort)
 	if err != nil {
 		return err
 	}
 
-	cmd, err = p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee -a %s", dkrcfg.EngineOptions, dkrcfg.EngineOptionsPath))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err = p.SSHCommand(fmt.Sprintf("echo \"%s\" | sudo tee -a %s", dkrcfg.EngineOptions, dkrcfg.EngineOptionsPath)); err != nil {
 		return err
 	}
 
@@ -191,16 +173,12 @@ func ConfigureAuth(p Provisioner, authOptions auth.AuthOptions) error {
 		return err
 	}
 
-	return nil
-}
+	// TODO: Do not hardcode daemon port, ask the driver
+	if err := utils.WaitForDocker(ip, dockerPort); err != nil {
+		return err
+	}
 
-func getDefaultDaemonOpts(driverName string, authOptions auth.AuthOptions) string {
-	return fmt.Sprintf(`--tlsverify --tlscacert=%s --tlskey=%s --tlscert=%s %s`,
-		authOptions.CaCertRemotePath,
-		authOptions.ServerKeyRemotePath,
-		authOptions.ServerCertRemotePath,
-		fmt.Sprintf("--label=provider=%s", driverName),
-	)
+	return nil
 }
 
 func configureSwarm(p Provisioner, swarmOptions swarm.SwarmOptions) error {
@@ -229,16 +207,7 @@ func configureSwarm(p Provisioner, swarmOptions swarm.SwarmOptions) error {
 	parts := strings.Split(u.Host, ":")
 	port := parts[1]
 
-	// TODO: Do not hardcode daemon port, ask the driver
-	if err := utils.WaitForDocker(ip, 2376); err != nil {
-		return err
-	}
-
-	cmd, err := p.SSHCommand(fmt.Sprintf("sudo docker pull %s", swarm.DockerImage))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err := p.SSHCommand(fmt.Sprintf("sudo docker pull %s", swarm.DockerImage)); err != nil {
 		return err
 	}
 
@@ -248,12 +217,8 @@ func configureSwarm(p Provisioner, swarmOptions swarm.SwarmOptions) error {
 	if swarmOptions.Master {
 		log.Debug("launching swarm master")
 		log.Debugf("master args: %s", masterArgs)
-		cmd, err = p.SSHCommand(fmt.Sprintf("sudo docker run -d -p %s:%s --restart=always --name swarm-agent-master -v %s:%s %s manage %s",
-			port, port, dockerDir, dockerDir, swarm.DockerImage, masterArgs))
-		if err != nil {
-			return err
-		}
-		if err := cmd.Run(); err != nil {
+		if _, err = p.SSHCommand(fmt.Sprintf("sudo docker run -d -p %s:%s --restart=always --name swarm-agent-master -v %s:%s %s manage %s",
+			port, port, dockerDir, dockerDir, swarm.DockerImage, masterArgs)); err != nil {
 			return err
 		}
 	}
@@ -261,12 +226,8 @@ func configureSwarm(p Provisioner, swarmOptions swarm.SwarmOptions) error {
 	// start node agent
 	log.Debug("launching swarm node")
 	log.Debugf("node args: %s", nodeArgs)
-	cmd, err = p.SSHCommand(fmt.Sprintf("sudo docker run -d --restart=always --name swarm-agent -v %s:%s %s join %s",
-		dockerDir, dockerDir, swarm.DockerImage, nodeArgs))
-	if err != nil {
-		return err
-	}
-	if err := cmd.Run(); err != nil {
+	if _, err = p.SSHCommand(fmt.Sprintf("sudo docker run -d --restart=always --name swarm-agent -v %s:%s %s join %s",
+		dockerDir, dockerDir, swarm.DockerImage, nodeArgs)); err != nil {
 		return err
 	}
 

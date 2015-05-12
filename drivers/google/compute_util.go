@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/docker/machine/log"
 	"github.com/docker/machine/ssh"
 	raw "google.golang.org/api/compute/v1"
 )
@@ -18,6 +18,7 @@ type ComputeUtil struct {
 	instanceName  string
 	userName      string
 	project       string
+	diskTypeURL   string
 	service       *raw.Service
 	zoneURL       string
 	authTokenPath string
@@ -29,7 +30,7 @@ type ComputeUtil struct {
 
 const (
 	apiURL             = "https://www.googleapis.com/compute/v1/projects/"
-	imageName          = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150128"
+	imageName          = "https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-1404-trusty-v20150316"
 	firewallRule       = "docker-machines"
 	port               = "2376"
 	firewallTargetTag  = "docker-machine"
@@ -49,6 +50,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		instanceName:  driver.MachineName,
 		userName:      driver.SSHUser,
 		project:       driver.Project,
+		diskTypeURL:   driver.DiskType,
 		service:       service,
 		zoneURL:       apiURL + driver.Project + "/zones/" + driver.Zone,
 		globalURL:     apiURL + driver.Project + "/global",
@@ -60,6 +62,10 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 
 func (c *ComputeUtil) diskName() string {
 	return c.instanceName + "-disk"
+}
+
+func (c *ComputeUtil) diskType() string {
+	return apiURL + c.project + "/zones/" + c.zone + "/diskTypes/" + c.diskTypeURL
 }
 
 // disk returns the gce Disk.
@@ -180,6 +186,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 			SourceImage: imageName,
 			// The maximum supported disk size is 1000GB, the cast should be fine.
 			DiskSizeGb: int64(d.DiskSize),
+			DiskType:   c.diskType(),
 		}
 	} else {
 		instance.Disks[0].Source = c.zoneURL + "/disks/" + c.instanceName + "-disk"
@@ -189,6 +196,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	if err != nil {
 		return err
 	}
+
 	log.Infof("Waiting for Instance...")
 	if err = c.waitForRegionalOp(op.Name); err != nil {
 		return err
@@ -198,8 +206,6 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	if err != nil {
 		return err
 	}
-	ip := instance.NetworkInterfaces[0].AccessConfigs[0].NatIP
-	c.waitForSSH(ip)
 
 	// Update the SSH Key
 	sshKey, err := ioutil.ReadFile(d.GetSSHKeyPath() + ".pub")
@@ -241,9 +247,17 @@ func (c *ComputeUtil) deleteInstance() error {
 
 func (c *ComputeUtil) executeCommands(commands []string, ip, sshKeyPath string) error {
 	for _, command := range commands {
-		cmd := ssh.GetSSHCommand(ip, 22, c.userName, sshKeyPath, command)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("error executing command: %v %v", command, err)
+		auth := &ssh.Auth{
+			Keys: []string{sshKeyPath},
+		}
+
+		client, err := ssh.NewClient(c.userName, ip, 22, auth)
+		if err != nil {
+			return err
+		}
+
+		if _, err := client.Run(command); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -278,12 +292,6 @@ func (c *ComputeUtil) waitForGlobalOp(name string) error {
 	return c.waitForOp(func() (*raw.Operation, error) {
 		return c.service.GlobalOperations.Get(c.project, name).Do()
 	})
-}
-
-// waitForSSH waits for SSH to become ready on the instance.
-func (c *ComputeUtil) waitForSSH(ip string) error {
-	log.Infof("Waiting for SSH...")
-	return ssh.WaitForTCP(fmt.Sprintf("%s:22", ip))
 }
 
 // ip retrieves and returns the external IP address of the instance.
