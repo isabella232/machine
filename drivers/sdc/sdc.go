@@ -1,38 +1,37 @@
 package sdc
 
 import (
-	"fmt"
-
 	"bytes"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"math/big"
+	"net/http"
+	"os"
+	"os/exec"
+	"path"
+	"strings"
+	"time"
+
 	"github.com/codegangsta/cli"
 	"github.com/docker/machine/drivers"
 	"github.com/docker/machine/log"
 	"github.com/docker/machine/provider"
 	"github.com/docker/machine/state"
 	"github.com/docker/machine/utils"
-	"os/exec"
-	"path"
-
-	"crypto/tls"
-	"errors"
-	"io"
-	"io/ioutil"
-	"math/big"
-	"net/http"
-	"os"
-	"strings"
-	"time"
 )
 
 const (
-	driverName             = "sdc"
-	SDCDockerPort   string = "2376"
-	SDCDockerDomain string = "docker.joyent.com"
+	driverName               = "sdc"
+	SDCDockerPort     string = "2376"
+	SDCDockerDomain   string = "docker.joyent.com"
 	SDCCloudApiDomain string = "api.joyent.com"
 )
 
@@ -83,7 +82,6 @@ func NewDriver(machineName string, storePath string, caCert string, privateKey s
 	}, nil
 }
 
-
 /* --------------------------------------------------------- */
 /* Implement the drivers.Driver interface.                   */
 /* --------------------------------------------------------- */
@@ -96,7 +94,7 @@ func (d *Driver) AuthorizePort(ports []*drivers.Port) error {
 // Create a host using the driver's config
 func (d *Driver) Create() error {
 	err := d.GenerateCertificates()
-	if (err != nil) {
+	if err != nil {
 		return err
 	}
 
@@ -117,19 +115,19 @@ func (d *Driver) DriverName() string {
 	 * We only need override the driver name in the 'create' step, so this
 	 * approximately checks if this is a create.
 	 */
-    for _, v := range os.Args {
-        if (v == "create") {
-            return "none";
-        }
-    }
+	for _, v := range os.Args {
+		if v == "create" {
+			return "none"
+		}
+	}
 
-	return driverName;
+	return driverName
 }
 
 // GetIP returns an IP or hostname that this host is available at
 // e.g. 1.2.3.4 or docker-host-d60b70a14d3a.cloudapp.net
 func (d *Driver) GetIP() (string, error) {
-	if (d.Region == "coal") {
+	if d.Region == "coal" {
 		return "my.sdc-docker", nil
 	} else {
 		return fmt.Sprintf("%s.%s", d.Region, SDCDockerDomain), nil
@@ -171,7 +169,7 @@ func (d *Driver) GetSSHKeyPath() string {
 func (d *Driver) GetURL() (string, error) {
 	ip, err := d.GetIP()
 	if err != nil {
-		return "", err;
+		return "", err
 	}
 	return fmt.Sprintf("tcp://%s:%s", ip, SDCDockerPort), nil
 }
@@ -254,7 +252,6 @@ func (d *Driver) Stop() error {
 /* End of driver.Driver                                      */
 /* --------------------------------------------------------- */
 
-
 /*
  * Download the certificate authority file from the sdc-docker server.
  */
@@ -266,7 +263,7 @@ func (d *Driver) DownloadCa() error {
 	var resp *http.Response
 	var err error
 
-	if (d.Region == "coal")	{
+	if d.Region == "coal" {
 		// Have to use an insecure https request for coal.
 		client := &http.Client{
 			Transport: &http.Transport{
@@ -334,20 +331,20 @@ func RunCommand(cmd []string, stdin string) (string, string, error) {
 	stdout := bufout.String()
 	stderr := buferr.String()
 
-	return stdout, stderr, nil;
+	return stdout, stderr, nil
 }
 
 func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId string) error {
-    //response=$(curl $CURL_OPTS $curlOpts -isS \
-    //    -H "Accept:application/json" -H "api-version:*" -H "Date: ${now}" \
-    //    -H "Authorization: Signature keyId=\"/$account/keys/$sshKeyId\",algorithm=\"rsa-sha256\" ${signature}" \
-    //    --url $cloudapiUrl/$account/services)
-    var url string
+	//response=$(curl $CURL_OPTS $curlOpts -isS \
+	//    -H "Accept:application/json" -H "api-version:*" -H "Date: ${now}" \
+	//    -H "Authorization: Signature keyId=\"/$account/keys/$sshKeyId\",algorithm=\"rsa-sha256\" ${signature}" \
+	//    --url $cloudapiUrl/$account/services)
+	var url string
 	var req *http.Request
 	var client *http.Client
 	var err error
 
-	if (d.Region == "coal") {
+	if d.Region == "coal" {
 		// For coal, ask the headnode for the cloudapi ip address.
 		cmd := []string{"ssh", "coal", "vmadm lookup -j alias=cloudapi0 | json -ae 'ext = this.nics.filter(function (nic) { return nic.nic_tag === \"external\"; })[0]; this.ip = ext ? ext.ip : this.nics[0].ip;' ip"}
 		stdout, _, err := RunCommand(cmd, "")
@@ -376,7 +373,7 @@ func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId 
 	}
 
 	sig := fmt.Sprintf("Signature keyId=\"/%s/keys/%s\",algorithm=\"rsa-sha256\" %s",
-					   d.Account, sshKeyId, encDateString)
+		d.Account, sshKeyId, encDateString)
 	req.Header.Add("Authorization", sig)
 	req.Header.Add("Accept", "application/json")
 	req.Header.Add("api-version", "*")
@@ -400,11 +397,11 @@ func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId 
 	var respMap map[string]interface{}
 	json.Unmarshal([]byte(body), &respMap)
 
-	if resp.StatusCode == http.StatusForbidden {  // 403
+	if resp.StatusCode == http.StatusForbidden { // 403
 		log.Fatalf("CloudAPI registration was forbidden: %s", respMap["message"])
 	}
 
-	if resp.StatusCode != http.StatusOK {  // 200
+	if resp.StatusCode != http.StatusOK { // 200
 		log.Fatalf("CloudAPI registration failed: %s %s", respMap["code"], respMap["message"])
 	}
 
@@ -414,10 +411,10 @@ func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId 
 func (d *Driver) RegisterWithSdcCloudApi() error {
 	log.Debugf("registering with sdc cloud api")
 
-    // now=$(date -u "+%a, %d %h %Y %H:%M:%S GMT")
+	// now=$(date -u "+%a, %d %h %Y %H:%M:%S GMT")
 	now := time.Now().UTC().Format(time.RFC1123)
 
-    // signature=$(echo -n ${now} | openssl dgst -sha256 -sign $sshPrivKeyPath | openssl enc -e -a | tr -d '\n')
+	// signature=$(echo -n ${now} | openssl dgst -sha256 -sign $sshPrivKeyPath | openssl enc -e -a | tr -d '\n')
 	cmd := []string{"openssl", "dgst", "-sha256", "-sign", d.PrivateKey}
 	stdout, _, err := RunCommand(cmd, now)
 	if err != nil {
@@ -445,7 +442,7 @@ func (d *Driver) RegisterWithSdcCloudApi() error {
 	}
 	sshKeyId := sshKeyIdSplit[1]
 
-    // Register this user/key with the SDC cloud API.
+	// Register this user/key with the SDC cloud API.
 	err = d.MakeCloudApiRequest(now, encDateString, sshKeyId)
 	if err != nil {
 		log.Debugf("MakeCloudApiRequest failed %s", err)
@@ -480,7 +477,7 @@ func (d *Driver) GenerateCertificates() error {
 		return err
 	}
 
-	cmd = exec.Command("openssl", "req", "-new", "-key", keyFile, "-out", csrFile, "-subj", "/CN=" + d.Account)
+	cmd = exec.Command("openssl", "req", "-new", "-key", keyFile, "-out", csrFile, "-subj", "/CN="+d.Account)
 	err = cmd.Run()
 	if err != nil {
 		return err
