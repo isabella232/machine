@@ -689,7 +689,7 @@ Options:
 
 The SoftLayer driver will use `UBUNTU_LATEST` as the image type by default.
 
-#### Joyent 
+#### Joyent SmartDataCenter
 
 Create machines on [Joyent's SmartDataCenter](http://joyent.com/).
 
@@ -707,18 +707,7 @@ Options:
 
 The first thing that will happen when you run `$ docker-machine create --driver sdc` is that your private key will be used for generating a certificate that the Docker client can use to communicate securely with the Docker service.
 
-The following docker-machine commands are supported with the SDC/JPC Docker service:
-
-- active : Get or set the active machine
-- create : Create a machine
-- config : Print the connection config for machine
-- inspect : Inspect information about a machine
-- ip : Get the IP address of a machine
-- ls : List machines
-- rm : Remove a machine
-- env : Display the commands to set up the environment for the Docker client
-- url : Get the URL of a machine
-- help, h : Shows a list of commands or help for one command
+Note that some docker-machine commands are not supported (e.g. ssh, start, stop, upgrade) as they are not applicable to the SDC/JPC Docker service.
 
 #### Microsoft Azure
 
