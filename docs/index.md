@@ -7,7 +7,8 @@ page_keywords: docker, machine, amazonec2, azure, digitalocean, google, openstac
 
 # Docker Machine
 
-> **Note**: Machine is currently in beta.  Features are likely to change.
+> **Note**: Machine is currently in beta, so things are likely to change. We
+> don't recommend you use it in production yet.
 
 Machine lets you create Docker hosts on your computer, on cloud providers, and
 inside your own data center. It creates servers, installs Docker on them, then
@@ -989,19 +990,19 @@ Options:
 
 By default, the Amazon EC2 driver will use a daily image of Ubuntu 14.04 LTS.
 
- | Region        | AMI ID     |
- |:--------------|:-----------|
-	|ap-northeast-1 |ami-44f1e245|
-	|ap-southeast-1 |ami-f95875ab|
-	|ap-southeast-2 |ami-890b62b3|
-	|cn-north-1     |ami-fe7ae8c7|
-	|eu-west-1      |ami-823686f5|
-	|eu-central-1   |ami-ac1524b1|
-	|sa-east-1      |ami-c770c1da|
-	|us-east-1      |ami-4ae27e22|
-	|us-west-1      |ami-d1180894|
-	|us-west-2      |ami-898dd9b9|
-	|us-gov-west-1  |ami-cf5630ec|
+| Region        | AMI ID     |
+|:--------------|:-----------|
+|ap-northeast-1 |ami-fc11d4fc|
+|ap-southeast-1 |ami-7854692a|
+|ap-southeast-2 |ami-c5611cff|
+|cn-north-1     |ami-7cd84545|
+|eu-west-1      |ami-2d96f65a|
+|eu-central-1   |ami-3cdae621|
+|sa-east-1      |ami-71b2376c|
+|us-east-1      |ami-cc3b3ea4|
+|us-west-1      |ami-017f9d45|
+|us-west-2      |ami-55526765|
+|us-gov-west-1  |ami-8ffa9bac|
 
 #### Digital Ocean
 
@@ -1175,6 +1176,28 @@ and CLI option are provided the CLI option takes the precedence.
 | `OS_TENANT_ID`       | `--openstack-tenant-id`     |
 | `OS_REGION_NAME`     | `--openstack-region`        |
 | `OS_ENDPOINT_TYPE`   | `--openstack-endpoint-type` |
+
+#### Microsoft Hyper-V
+
+Creates a Boot2Docker virtual machine locally on your Windows machine
+using Hyper-V.  [See here](http://windows.microsoft.com/en-us/windows-8/hyper-v-run-virtual-machines)
+for instructions to enable Hyper-V. You will need to use an
+Administrator level account to create and manage Hyper-V machines.
+
+> **Note**: You will need an existing virtual switch to use the
+> driver.  Hyper-V can share an external network interface (aka
+> bridging), see [this blog](http://blogs.technet.com/b/canitpro/archive/2014/03/11/step-by-step-enabling-hyper-v-for-use-on-windows-8-1.aspx).
+> If you would like to use NAT, create an internal network, and use
+> [Internet Connection
+> Sharing](http://www.packet6.com/allowing-windows-8-1-hyper-v-vm-to-work-with-wifi/).
+
+Options:
+
+ - `--hyper-v-boot2docker-location`: Location of a local boot2docker iso to use. Overrides the URL option below.
+ - `--hyper-v-boot2docker-url`: The URL of the boot2docker iso. Defaults to the latest available version.
+ - `--hyper-v-disk-size`: Size of disk for the host in MB. Defaults to `20000`.
+ - `--hyper-v-memory`: Size of memory for the host in MB. Defaults to `1024`. The machine is setup to use dynamic memory.
+ - `--hyper-v-virtual-switch`: Name of the virtual switch to use. Defaults to first found.
 
 #### Rackspace
 Create machines on [Rackspace cloud](http://www.rackspace.com/cloud)
