@@ -45,22 +45,22 @@ export MACHINE_STORAGE_PATH=/tmp/machine-bats-test-$DRIVER
 
 @test "$DRIVER: ssh should fail (unsupported)" {
   run machine ssh $NAME -- ls -lah /
-  [[ ${lines[1]} == *"not currently support"*  ]]
+  [[ ${lines[1]} == *"not avaiable"*  ]]
 }
 
 @test "$DRIVER: stop should fail (unsupported)" {
   run machine stop $NAME
-  [[ ${lines[1]} == *"not currently support"*  ]]
+  [[ ${lines[1]} == *"not avaiable"*  ]]
 }
 
 @test "$DRIVER: start should fail (unsupported)" {
   run machine start $NAME
-  [[ ${lines[1]} == *"not currently support"*  ]]
+  [[ ${lines[1]} == *"not avaiable"*  ]]
 }
 
 @test "$DRIVER: restart should fail (unsupported)" {
   run machine restart $NAME
-  [[ ${lines[1]} == *"not currently support"*  ]]
+  [[ ${lines[1]} == *"not avaiable"*  ]]
 }
 
 @test "$DRIVER: machine should show running" {

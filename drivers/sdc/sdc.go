@@ -141,8 +141,7 @@ func (d *Driver) GetMachineName() string {
 
 // GetSSHHostname returns hostname for use with ssh
 func (d *Driver) GetSSHHostname() (string, error) {
-	// TODO: Anything better here?
-	return d.GetIP()
+	return "", fmt.Errorf("SSH is not available for the sdc driver")
 }
 
 // GetSSHPort returns port for use with ssh
@@ -203,7 +202,7 @@ func (d *Driver) GetProviderType() provider.ProviderType {
 
 // Kill stops a host forcefully
 func (d *Driver) Kill() error {
-	return nil
+	return fmt.Errorf("Kill is not available for the sdc driver")
 }
 
 // PreCreateCheck allows for pre-create operations to make sure a driver is ready for creation
@@ -219,7 +218,7 @@ func (d *Driver) Remove() error {
 // Restart a host. This may just call Stop(); Start() if the provider does not
 // have any special restart behaviour.
 func (d *Driver) Restart() error {
-	return nil
+	return fmt.Errorf("Restart is not available for the sdc driver")
 }
 
 // SetConfigFromFlags configures the driver with the object that was returned
@@ -240,12 +239,12 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 
 // Start a host
 func (d *Driver) Start() error {
-	return nil
+	return fmt.Errorf("Start is not available for the sdc driver")
 }
 
 // Stop a host gracefully
 func (d *Driver) Stop() error {
-	return nil
+	return fmt.Errorf("Stop is not available for the sdc driver")
 }
 
 /* --------------------------------------------------------- */
