@@ -349,7 +349,7 @@ func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId 
 		cmd := []string{"ssh", "coal", "vmadm lookup -j alias=cloudapi0 | json -ae 'ext = this.nics.filter(function (nic) { return nic.nic_tag === \"external\"; })[0]; this.ip = ext ? ext.ip : this.nics[0].ip;' ip"}
 		stdout, _, err := RunCommand(cmd, "")
 		if err != nil {
-			log.Fatalf("Unable to get coal CloudAPI ip address: %s", err)
+			log.Fatalf("ERROR: Unable to get coal CloudAPI ip address: %s", err)
 		}
 		ip := strings.TrimSpace(stdout)
 		url = fmt.Sprintf("https://%s/%s/services", ip, d.Account)
@@ -398,11 +398,11 @@ func (d *Driver) MakeCloudApiRequest(now string, encDateString string, sshKeyId 
 	json.Unmarshal([]byte(body), &respMap)
 
 	if resp.StatusCode == http.StatusForbidden { // 403
-		log.Fatalf("CloudAPI registration was forbidden: %s", respMap["message"])
+		log.Fatalf("ERROR: CloudAPI registration was forbidden: %s", respMap["message"])
 	}
 
 	if resp.StatusCode != http.StatusOK { // 200
-		log.Fatalf("CloudAPI registration failed: %s %s", respMap["code"], respMap["message"])
+		log.Fatalf("ERROR: CloudAPI registration failed: %s", respMap["message"])
 	}
 
 	return nil
