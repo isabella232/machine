@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	envTmpl = `{{ .Prefix }}DOCKER_TLS_VERIFY{{ .Delimiter }}{{ .DockerTLSVerify }}{{ .Suffix }}{{ .Prefix }}DOCKER_HOST{{ .Delimiter }}{{ .DockerHost }}{{ .Suffix }}{{ .Prefix }}DOCKER_CERT_PATH{{ .Delimiter }}{{ .DockerCertPath }}{{ .Suffix }}{{ .UsageHint }}`
+	envTmpl = `{{ .Prefix }}DOCKER_TLS_VERIFY{{ .Delimiter }}{{ .DockerTLSVerify }}{{ .Suffix }}{{ .Prefix }}DOCKER_HOST{{ .Delimiter }}{{ .DockerHost }}{{ .Suffix }}{{ .Prefix }}DOCKER_CERT_PATH{{ .Delimiter }}{{ .DockerCertPath }}{{ .Suffix }}{{ .Prefix }}DOCKER_MACHINE_NAME{{ .Delimiter }}{{ .MachineName }}{{ .Suffix }}{{ .UsageHint }}`
 )
 
 var (
@@ -30,6 +30,7 @@ type ShellConfig struct {
 	DockerHost      string
 	DockerTLSVerify string
 	UsageHint       string
+	MachineName     string
 }
 
 func cmdEnv(c *cli.Context) {
@@ -53,6 +54,7 @@ func cmdEnv(c *cli.Context) {
 		DockerCertPath:  "",
 		DockerHost:      "",
 		DockerTLSVerify: "",
+		MachineName:     "",
 	}
 
 	// unset vars
@@ -154,6 +156,7 @@ func cmdEnv(c *cli.Context) {
 		DockerHost:      dockerHost,
 		DockerTLSVerify: "1",
 		UsageHint:       usageHint,
+		MachineName:     cfg.machineName,
 	}
 
 	switch userShell {
@@ -210,5 +213,5 @@ func generateUsageHint(appName, machineName, userShell string) string {
 		}
 	}
 
-	return fmt.Sprintf("# Run this command to configure your shell: %s\n", cmd)
+	return fmt.Sprintf("# Run this command to configure your shell: \n# %s\n", cmd)
 }

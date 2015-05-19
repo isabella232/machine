@@ -175,9 +175,12 @@ To see what will be set, run `docker-machine env dev`.
 
 ```
 $ docker-machine env dev
-export DOCKER_TLS_VERIFY=1
-export DOCKER_CERT_PATH=/Users/<your username>/.docker/machine/machines/dev
-export DOCKER_HOST=tcp://192.168.99.100:2376
+export DOCKER_TLS_VERIFY="1"
+export DOCKER_HOST="tcp://172.16.62.130:2376"
+export DOCKER_CERT_PATH="/Users/<your username>/.docker/machine/machines/dev"
+export DOCKER_MACHINE_NAME="dev"
+# Run this command to configure your shell:
+# eval "$(docker-machine env dev)"
 ```
 
 You can now run Docker commands on this host:
@@ -614,6 +617,7 @@ $ env | grep DOCKER
 DOCKER_HOST=tcp://192.168.99.101:2376
 DOCKER_CERT_PATH=/Users/nathanleclaire/.docker/machines/.client
 DOCKER_TLS_VERIFY=1
+DOCKER_MACHINE_NAME=dev
 $ # If you run a docker command, now it will run against that host.
 $ eval "$(docker-machine env -u)"
 $ env | grep DOCKER
@@ -633,7 +637,9 @@ values in the format which `fish` expects:
 set -x DOCKER_TLS_VERIFY 1;
 set -x DOCKER_CERT_PATH "/Users/nathanleclaire/.docker/machine/machines/overlay";
 set -x DOCKER_HOST tcp://192.168.99.102:2376;
-# Run this command to configure your shell: eval (docker-machine env overlay)
+set -x DOCKER_MACHINE_NAME overlay
+# Run this command to configure your shell:
+# eval "$(docker-machine env overlay)"
 ```
 
 If you are on Windows and using Powershell or `cmd.exe`, `docker-machine env`
@@ -648,7 +654,9 @@ $ docker-machine.exe env --shell powershell dev
 $Env:DOCKER_TLS_VERIFY = "1"
 $Env:DOCKER_HOST = "tcp://192.168.99.101:2376"
 $Env:DOCKER_CERT_PATH = "C:\Users\captain\.docker\machine\machines\dev"
-# Run this command to configure your shell: docker-machine.exe env --shell=powershell | Invoke-Expression
+$Env:DOCKER_MACHINE_NAME = "dev"
+# Run this command to configure your shell:
+# docker-machine.exe env --shell=powershell | Invoke-Expression
 ```
 
 For `cmd.exe`:
@@ -658,6 +666,7 @@ $ docker-machine.exe env --shell cmd dev
 set DOCKER_TLS_VERIFY=1
 set DOCKER_HOST=tcp://192.168.99.101:2376
 set DOCKER_CERT_PATH=C:\Users\captain\.docker\machine\machines\dev
+set DOCKER_MACHINE_NAME=dev
 # Run this command to configure your shell: copy and paste the above values into your command prompt
 ```
 
@@ -913,6 +922,33 @@ cgroup                  499.8M         0    499.8M   0% /sys/fs/cgroup
 /mnt/sda1/var/lib/docker/aufs
 ```
 
+#### scp
+
+Copy files from your local host to a machine, from machine to machine, or from a
+machine to your local host using `scp`.
+
+The notation is `machinename:/path/to/files` for the arguments; in the host
+machine's case, you don't have to specify the name, just the path.
+
+Consider the following example:
+
+```
+$ cat foo.txt
+cat: foo.txt: No such file or directory
+$ docker-machine ssh dev pwd
+/home/docker
+$ docker-machine ssh dev 'echo A file created remotely! >foo.txt'
+$ docker-machine scp dev:/home/docker/foo.txt .
+foo.txt                                                           100%   28     0.0KB/s   00:00
+$ cat foo.txt
+A file created remotely!
+```
+
+Files are copied recursively by default (`scp`'s `-r` flag).
+
+In the case of transfering files from machine to machine, they go through the
+local host's filesystem first (using `scp`'s `-3` flag).
+
 #### start
 
 Gracefully start a machine.
@@ -987,6 +1023,7 @@ Options:
  - `--amazonec2-vpc-id`: **required** Your VPC ID to launch the instance in.
  - `--amazonec2-zone`: The AWS zone launch the instance in (i.e. one of a,b,c,d,e). Default: `a`
  - `--amazonec2-private-address-only`: Use the private IP address only
+ - `--amazonec2-monitoring`: Enable CloudWatch Monitoring.
 
 By default, the Amazon EC2 driver will use a daily image of Ubuntu 14.04 LTS.
 
